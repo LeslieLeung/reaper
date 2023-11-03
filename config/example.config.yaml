@@ -1,0 +1,10 @@
+repository:
+  - name: reaper
+    url: github.com/leslieleung/reaper
+    storage:
+      - localFile
+
+storage:
+  - name: localFile
+    type: file
+    path: /tmp/reaper
