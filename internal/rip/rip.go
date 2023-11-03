@@ -4,12 +4,13 @@ import (
 	"context"
 	"github.com/go-git/go-git/v5"
 	"github.com/google/uuid"
+	"github.com/leslieleung/reaper/internal/config"
+	"github.com/leslieleung/reaper/internal/storage"
+	"github.com/leslieleung/reaper/internal/ui"
 	"github.com/mholt/archiver/v4"
 	"os"
 	"path"
-	"reaper/internal/config"
-	"reaper/internal/storage"
-	"reaper/internal/ui"
+
 	"time"
 )
 

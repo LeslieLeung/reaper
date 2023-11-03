@@ -2,11 +2,11 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/leslieleung/reaper/cmd/rip"
+	"github.com/leslieleung/reaper/cmd/run"
+	"github.com/leslieleung/reaper/internal/config"
+	"github.com/leslieleung/reaper/internal/ui"
 	"github.com/spf13/cobra"
-	"reaper/cmd/rip"
-	"reaper/cmd/run"
-	"reaper/internal/config"
-	"reaper/internal/ui"
 )
 
 var rootCmd = &cobra.Command{

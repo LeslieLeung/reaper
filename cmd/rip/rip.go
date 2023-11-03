@@ -1,10 +1,10 @@
 package rip
 
 import (
+	"github.com/leslieleung/reaper/internal/config"
+	"github.com/leslieleung/reaper/internal/rip"
+	"github.com/leslieleung/reaper/internal/ui"
 	"github.com/spf13/cobra"
-	"reaper/internal/config"
-	"reaper/internal/rip"
-	"reaper/internal/ui"
 )
 
 var Cmd = &cobra.Command{

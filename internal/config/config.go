@@ -1,8 +1,8 @@
 package config
 
 import (
+	"github.com/leslieleung/reaper/internal/ui"
 	"github.com/spf13/viper"
-	"reaper/internal/ui"
 )
 
 type Config struct {
