@@ -1,7 +1,7 @@
 package main
 
 import (
-	"reaper/cmd"
+	"github.com/leslieleung/reaper/cmd"
 )
 
 func main() {
