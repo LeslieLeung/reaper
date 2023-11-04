@@ -14,6 +14,10 @@ archives:
     format_overrides:
       - goos: windows
         format: zip
+dockers:
+  - image_templates:
+      - leslieleung/reaper:{{ .Tag }}
+      - leslieleung/reaper:latest
 checksum:
   name_template: 'checksums.txt'
 snapshot:
