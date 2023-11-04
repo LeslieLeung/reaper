@@ -10,7 +10,13 @@ REpository ArchivER（REAPER）是一个用于从任何Git服务器归档 Git �
 go install github.com/leslieleung/reaper@latest
 ```
 
-或从 [Release](https://github.com/LeslieLeung/reaper/releases) 获取。 
+或从 [Release](https://github.com/LeslieLeung/reaper/releases) 获取。
+
+### docker
+
+```bash
+$ docker run --rm -v $(pwd):/reaper leslieleung/reaper:latest reaper -c config.yaml run
+```
 
 ## 使用方法
 

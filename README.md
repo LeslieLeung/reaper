@@ -7,10 +7,16 @@ REpository ArchivER(REAPER) is a tool to archive repositories from any Git serve
 ## Installation
 
 ```bash
-go install github.com/leslieleung/reaper@latest
+$ go install github.com/leslieleung/reaper@latest
 ```
 
 Or get from [Release](https://github.com/LeslieLeung/reaper/releases).
+
+### docker
+
+```bash
+$ docker run --rm -v $(pwd):/reaper leslieleung/reaper:latest reaper -c config.yaml run
+```
 
 ## Usage
 

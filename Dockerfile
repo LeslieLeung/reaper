@@ -1,5 +1,4 @@
 FROM alpine:3.18.4
-WORKDIR /app
-COPY reaper /app/reaper
+COPY reaper /usr/local/bin/reaper
 
-CMD ["/app/reaper"]
+CMD ["reaper"]
