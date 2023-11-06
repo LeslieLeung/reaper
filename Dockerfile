@@ -23,5 +23,5 @@ COPY reaper /usr/local/bin/reaper
 
 WORKDIR /reaper
 
-ENTRYPOINT ["reaper","-c","/reaper/config.yaml"]
+ENTRYPOINT ["reaper"]
 CMD ["run"]
