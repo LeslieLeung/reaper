@@ -55,7 +55,6 @@ func Rip(repo config.Repository, storages []config.Storage) {
 	if err != nil {
 		ui.ErrorfExit("Error creating archive, %s", err)
 	}
-	defer out.Close()
 	format := archiver.CompressedArchive{
 		Compression: archiver.Gz{},
 		Archival:    archiver.Tar{},
@@ -63,6 +62,9 @@ func Rip(repo config.Repository, storages []config.Storage) {
 	err = format.Archive(context.Background(), out, files)
 	if err != nil {
 		ui.ErrorfExit("Error creating archive, %s", err)
+	}
+	if err := out.Close(); err != nil {
+		ui.ErrorfExit("Error closing archive, %s", err)
 	}
 
 	// handle storages
