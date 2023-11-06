@@ -4,6 +4,16 @@
 
 REpository ArchivER（REAPER）是一个用于从任何Git服务器归档 Git 仓库的工具。
 
+- [安装](#安装)
+- [使用方法](#使用方法)
+  - [rip](#rip)
+  - [run](#run)
+- [配置](#配置)
+- [存储](#存储)
+- [使用 Docker 运行](#使用-docker-运行)
+  - [Docker CLI](#docker-cli)
+  - [Docker Compose](#docker-compose)
+
 ## 安装
 
 ```bash
@@ -11,12 +21,6 @@ go install github.com/leslieleung/reaper@latest
 ```
 
 或从 [Release](https://github.com/LeslieLeung/reaper/releases) 获取。
-
-### docker
-
-```bash
-$ docker run --rm -v $(pwd):/reaper leslieleung/reaper:latest reaper -c config.yaml run
-```
 
 ## 使用方法
 
@@ -32,7 +36,7 @@ repository:
 storage:
   - name: localFile
     type: file
-    path: /tmp/reaper
+    path: ./repo
 ```
 
 然后，你可以使用配置文件运行REAPER。
@@ -65,9 +69,34 @@ reaper run
 
 有关配置，你可以查看此[示例](config/example.config.yaml)。
 
-### 存储
+## 存储
 
 REAPER支持多种存储类型。
 
 - [x] 文件
 - [ ] AWS S3
+
+## 使用 Docker 运行
+
+### Docker CLI
+
+一次性运行。 
+- 修改 `${pwd}/config/example.config.yaml` 为你的配置文件本地路径。
+- 自定义 `${pwd}/repo:/repo` 为你需要的存储路径。容器内路径需要与配置文件中的路径一致。
+
+```bash
+docker run --rm \
+    -v ${pwd}/config/example.config.yaml:/config.yaml \
+    -v ${pwd}/repo:/repo \
+    leslieleung/reaper:latest \
+    run
+```
+
+### Docker Compose
+
+示例Compose配置，见 [docker-compose.yml](docker-compose.yml)。
+
+```bash
+docker compose up -d
+```
+
