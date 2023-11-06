@@ -81,11 +81,15 @@ REAPER supports multiple storage types.
 ### Docker CLI
 
 One-off run. 
-
-Please change `${pwd}/config/example.config.yaml` to your config file path.
+- Change `${pwd}/config/example.config.yaml` to your config file path.
+- Customize `${pwd}/repo:/repo` to be your desired storage path. The in-container path needs to be the same as the path in config file.
 
 ```bash
-docker run --rm -v ${pwd}/config/example.config.yaml:/config.yaml leslieleung/reaper:latest run
+docker run --rm \
+    -v ${pwd}/config/example.config.yaml:/config.yaml \
+    -v ${pwd}/repo:/repo \
+    leslieleung/reaper:latest \
+    run
 ```
 
 ### Docker Compose

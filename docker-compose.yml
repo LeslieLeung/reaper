@@ -8,8 +8,11 @@ services:
       # see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
       - TZ=Asia/Shanghai
     volumes:
-      # change this to your config file path
-      - ${pwd}/example.config.yaml:/config.yaml
+      # config file path, modify it to yours
+      - ${pwd}/config/example.config.syaml:/config.yaml
+      # data path, to store downloaded repo, modify it to yours
+      # the in-container path need to be the same as defined in config file
+      - ${pwd}/repo:/repo
     # defaultly archives all repositories defined in configuration.
     command: ["run"]
     # or just archives a single repository defined in configuration.

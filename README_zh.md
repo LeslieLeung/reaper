@@ -36,7 +36,7 @@ repository:
 storage:
   - name: localFile
     type: file
-    path: /tmp/reaper
+    path: ./repo
 ```
 
 然后，你可以使用配置文件运行REAPER。
@@ -81,11 +81,15 @@ REAPER支持多种存储类型。
 ### Docker CLI
 
 一次性运行。 
-
-修改 `${pwd}/config/example.config.yaml` 为你的配置文件本地路径。
+- 修改 `${pwd}/config/example.config.yaml` 为你的配置文件本地路径。
+- 自定义 `${pwd}/repo:/repo` 为你需要的存储路径。容器内路径需要与配置文件中的路径一致。
 
 ```bash
-docker run --rm -v ${pwd}/config/example.config.yaml:/config.yaml leslieleung/reaper:latest run
+docker run --rm \
+    -v ${pwd}/config/example.config.yaml:/config.yaml \
+    -v ${pwd}/repo:/repo \
+    leslieleung/reaper:latest \
+    run
 ```
 
 ### Docker Compose
