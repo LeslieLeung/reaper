@@ -11,8 +11,9 @@ var _ Storage = (*File)(nil)
 type File struct {
 }
 
-func (f File) PutObject(identifier string, data []byte) error {
-	dir := path.Dir(identifier)
+// createPathIfNotExist creates the directory for the given file path if it does not exist.
+func createPathIfNotExist(filePath string) error {
+	dir := path.Dir(filePath)
 	_, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -29,8 +30,14 @@ func (f File) PutObject(identifier string, data []byte) error {
 			}
 		}
 	}
-	err = os.WriteFile(identifier, data, 0664)
-	return err
+	return nil
+}
+
+func (f File) PutObject(identifier string, data []byte) error {
+	if err := createPathIfNotExist(identifier); err != nil {
+		return err
+	}
+	return os.WriteFile(identifier, data, 0664)
 }
 
 func (f File) PutObjectFromPath(path string, identifier string) error {
@@ -40,6 +47,9 @@ func (f File) PutObjectFromPath(path string, identifier string) error {
 	}
 	defer source.Close()
 
+	if err := createPathIfNotExist(identifier); err != nil {
+		return err
+	}
 	destination, err := os.Create(identifier)
 	if err != nil {
 		return err
