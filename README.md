@@ -36,7 +36,7 @@ repository:
 storage:
   - name: localFile
     type: file
-    path: /tmp/reaper
+    path: ./repo
 ```
 
 Then you can run REAPER with the configuration file.
