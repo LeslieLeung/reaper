@@ -85,7 +85,7 @@ One-off run.
 Please change `${pwd}/config/example.config.yaml` to your config file path.
 
 ```bash
-docker run --rm -v ${pwd}/config/example.config.yaml:/reaper/config.yaml leslieleung/reaper:latest run
+docker run --rm -v ${pwd}/config/example.config.yaml:/config.yaml leslieleung/reaper:latest run
 ```
 
 ### Docker Compose

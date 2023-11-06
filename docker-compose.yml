@@ -9,7 +9,7 @@ services:
       - TZ=Asia/Shanghai
     volumes:
       # change this to your config file path
-      - ${pwd}/config/example.config.yaml:/reaper/config.yaml
+      - ${pwd}/example.config.yaml:/config.yaml
     # defaultly archives all repositories defined in configuration.
     command: ["run"]
     # or just archives a single repository defined in configuration.

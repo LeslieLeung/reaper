@@ -19,9 +19,7 @@ COPY --from=alpine \
     /tmp/reaper \
     /tmp/reaper
 
-COPY reaper /usr/local/bin/reaper
+COPY reaper /
 
-WORKDIR /reaper
-
-ENTRYPOINT ["reaper"]
+ENTRYPOINT ["/reaper"]
 CMD ["run"]

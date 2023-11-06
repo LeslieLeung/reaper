@@ -85,7 +85,7 @@ REAPER支持多种存储类型。
 修改 `${pwd}/config/example.config.yaml` 为你的配置文件本地路径。
 
 ```bash
-docker run --rm -v ${pwd}/config/example.config.yaml:/reaper/config.yaml leslieleung/reaper:latest run
+docker run --rm -v ${pwd}/config/example.config.yaml:/config.yaml leslieleung/reaper:latest run
 ```
 
 ### Docker Compose
