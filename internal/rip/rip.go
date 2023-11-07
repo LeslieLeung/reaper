@@ -1,6 +1,7 @@
 package rip
 
 import (
+	"bytes"
 	"context"
 	"github.com/go-git/go-git/v5"
 	"github.com/google/uuid"
@@ -44,7 +45,6 @@ func Rip(repo config.Repository, storages []config.Storage) error {
 	ui.Printf("Repository %s cloned", repo.Name)
 	files, err := archiver.FilesFromDisk(nil, map[string]string{
 		path.Join(currentDir, ".reaper", id): repo.Name,
-		// TODO add file hash
 	})
 	if err != nil {
 		ui.Errorf("Error reading files, %s", err)
@@ -53,23 +53,16 @@ func Rip(repo config.Repository, storages []config.Storage) error {
 
 	now := time.Now().Format("20060102150405")
 	base := repo.Name + "-" + now + ".tar.gz"
-	p := path.Join(currentDir, ".reaper", base)
-	out, err := os.Create(p)
-	if err != nil {
-		ui.Errorf("Error creating archive, %s", err)
-		return err
-	}
+	// TODO store to a temporary file first if greater than certain size
+	archive := &bytes.Buffer{}
+
 	format := archiver.CompressedArchive{
 		Compression: archiver.Gz{},
 		Archival:    archiver.Tar{},
 	}
-	err = format.Archive(context.Background(), out, files)
+	err = format.Archive(context.Background(), archive, files)
 	if err != nil {
 		ui.Errorf("Error creating archive, %s", err)
-		return err
-	}
-	if err := out.Close(); err != nil {
-		ui.Errorf("Error closing archive, %s", err)
 		return err
 	}
 
@@ -78,7 +71,7 @@ func Rip(repo config.Repository, storages []config.Storage) error {
 		switch s.Type {
 		case "file":
 			fileBackend := storage.File{}
-			err := fileBackend.PutObjectFromPath(p, path.Join(s.Path, base))
+			err := fileBackend.PutObject(path.Join(s.Path, base), archive.Bytes())
 			if err != nil {
 				ui.Errorf("Error storing file, %s", err)
 				return err
@@ -91,11 +84,6 @@ func Rip(repo config.Repository, storages []config.Storage) error {
 	err = os.RemoveAll(path.Join(currentDir, ".reaper", id))
 	if err != nil {
 		ui.Errorf("Error cleaning up working directory, %s", err)
-		return err
-	}
-	err = os.Remove(p)
-	if err != nil {
-		ui.Errorf("Error cleaning up archive, %s", err)
 		return err
 	}
 	return nil

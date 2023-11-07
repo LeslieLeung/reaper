@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"io"
 	"os"
 	"path"
 )
@@ -9,6 +8,21 @@ import (
 var _ Storage = (*File)(nil)
 
 type File struct {
+}
+
+func (f File) ListObject(prefix string) ([]Object, error) {
+	// TODO implement me
+	panic("implement me")
+}
+
+func (f File) GetObject(identifier string) (Object, error) {
+	// TODO implement me
+	panic("implement me")
+}
+
+func (f File) DeleteObject(identifier string) error {
+	// TODO implement me
+	panic("implement me")
 }
 
 // createPathIfNotExist creates the directory for the given file path if it does not exist.
@@ -38,24 +52,4 @@ func (f File) PutObject(identifier string, data []byte) error {
 		return err
 	}
 	return os.WriteFile(identifier, data, 0664)
-}
-
-func (f File) PutObjectFromPath(path string, identifier string) error {
-	source, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer source.Close()
-
-	if err := createPathIfNotExist(identifier); err != nil {
-		return err
-	}
-	destination, err := os.Create(identifier)
-	if err != nil {
-		return err
-	}
-	defer destination.Close()
-
-	_, err = io.Copy(destination, source)
-	return err
 }
