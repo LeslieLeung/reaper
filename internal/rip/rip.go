@@ -14,18 +14,20 @@ import (
 	"time"
 )
 
-func Rip(repo config.Repository, storages []config.Storage) {
+func Rip(repo config.Repository, storages []config.Storage) error {
 	id := uuid.New().String()
 	// get current directory
 	currentDir, _ := os.Getwd()
 	// create a working directory
 	err := os.MkdirAll(path.Join(currentDir, ".reaper", id), 0774)
 	if err != nil {
-		ui.ErrorfExit("Error creating working directory, %s", err)
+		ui.Errorf("Error creating working directory, %s", err)
+		return err
 	}
 	err = os.Chmod(path.Join(currentDir, ".reaper", id), 0774)
 	if err != nil {
-		ui.ErrorfExit("Error changing permission of working directory, %s", err)
+		ui.Errorf("Error changing permission of working directory, %s", err)
+		return err
 	}
 
 	// clone the repo
@@ -35,17 +37,18 @@ func Rip(repo config.Repository, storages []config.Storage) {
 	})
 
 	if err != nil {
-		ui.ErrorfExit("Error cloning repository, %s", err)
+		ui.Errorf("Error cloning repository, %s", err)
+		return err
 	}
 
 	ui.Printf("Repository %s cloned", repo.Name)
 	files, err := archiver.FilesFromDisk(nil, map[string]string{
 		path.Join(currentDir, ".reaper", id): repo.Name,
-		// path.Join(currentDir, ".reaper", id): "repo.Name",
 		// TODO add file hash
 	})
 	if err != nil {
-		ui.ErrorfExit("Error reading files, %s", err)
+		ui.Errorf("Error reading files, %s", err)
+		return err
 	}
 
 	now := time.Now().Format("20060102150405")
@@ -53,7 +56,8 @@ func Rip(repo config.Repository, storages []config.Storage) {
 	p := path.Join(currentDir, ".reaper", base)
 	out, err := os.Create(p)
 	if err != nil {
-		ui.ErrorfExit("Error creating archive, %s", err)
+		ui.Errorf("Error creating archive, %s", err)
+		return err
 	}
 	format := archiver.CompressedArchive{
 		Compression: archiver.Gz{},
@@ -61,10 +65,12 @@ func Rip(repo config.Repository, storages []config.Storage) {
 	}
 	err = format.Archive(context.Background(), out, files)
 	if err != nil {
-		ui.ErrorfExit("Error creating archive, %s", err)
+		ui.Errorf("Error creating archive, %s", err)
+		return err
 	}
 	if err := out.Close(); err != nil {
-		ui.ErrorfExit("Error closing archive, %s", err)
+		ui.Errorf("Error closing archive, %s", err)
+		return err
 	}
 
 	// handle storages
@@ -74,7 +80,8 @@ func Rip(repo config.Repository, storages []config.Storage) {
 			fileBackend := storage.File{}
 			err := fileBackend.PutObjectFromPath(p, path.Join(s.Path, base))
 			if err != nil {
-				ui.ErrorfExit("Error storing file, %s", err)
+				ui.Errorf("Error storing file, %s", err)
+				return err
 			}
 			ui.Printf("File %s stored", path.Join(s.Path, base))
 		}
@@ -83,10 +90,13 @@ func Rip(repo config.Repository, storages []config.Storage) {
 	// cleanup
 	err = os.RemoveAll(path.Join(currentDir, ".reaper", id))
 	if err != nil {
-		ui.ErrorfExit("Error cleaning up working directory, %s", err)
+		ui.Errorf("Error cleaning up working directory, %s", err)
+		return err
 	}
 	err = os.Remove(p)
 	if err != nil {
-		ui.ErrorfExit("Error cleaning up archive, %s", err)
+		ui.Errorf("Error cleaning up archive, %s", err)
+		return err
 	}
+	return nil
 }

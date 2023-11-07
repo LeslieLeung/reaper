@@ -48,5 +48,7 @@ func runRip(cmd *cobra.Command, args []string) {
 		ui.ErrorfExit("Storage %s not found in config", repo.Storage)
 	}
 
-	rip.Rip(repo, storages)
+	if err := rip.Rip(repo, storages); err != nil {
+		ui.ErrorfExit("Error running %s, %s", repo.Name, err)
+	}
 }

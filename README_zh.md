@@ -100,3 +100,7 @@ docker run --rm \
 docker compose up -d
 ```
 
+
+## Stargazers over time
+
+[![Stargazers over time](https://starchart.cc/LeslieLeung/reaper.svg)](https://starchart.cc/LeslieLeung/reaper)
