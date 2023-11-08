@@ -53,3 +53,15 @@ func Init() {
 func GetIns() *Config {
 	return ins
 }
+
+func GetStorageMap() map[string]MultiStorage {
+	storageMap := make(map[string]MultiStorage)
+	for _, storage := range ins.Storage {
+		storageMap[storage.Name] = storage
+	}
+	return storageMap
+}
+
+func GetRepositories() []Repository {
+	return ins.Repository
+}

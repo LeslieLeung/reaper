@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"github.com/leslieleung/reaper/cmd/daemon"
 	"github.com/leslieleung/reaper/cmd/rip"
 	"github.com/leslieleung/reaper/cmd/run"
 	"github.com/leslieleung/reaper/internal/config"
@@ -25,6 +26,7 @@ func init() {
 	// commands
 	rootCmd.AddCommand(rip.Cmd)
 	rootCmd.AddCommand(run.Cmd)
+	rootCmd.AddCommand(daemon.Cmd)
 	// flags
 	rootCmd.PersistentFlags().StringVarP(&config.Path, "config", "c", "config.yaml", "config file path")
 }

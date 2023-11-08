@@ -14,14 +14,9 @@ var Cmd = &cobra.Command{
 }
 
 func runRun(cmd *cobra.Command, args []string) {
-	cfg := config.GetIns()
+	storageMap := config.GetStorageMap()
 
-	storageMap := make(map[string]config.MultiStorage)
-	for _, storage := range cfg.Storage {
-		storageMap[storage.Name] = storage
-	}
-
-	for _, repo := range cfg.Repository {
+	for _, repo := range config.GetRepositories() {
 		storages := make([]config.MultiStorage, 0)
 		for _, storage := range repo.Storage {
 			if s, ok := storageMap[storage]; !ok {
