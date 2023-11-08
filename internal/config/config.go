@@ -6,8 +6,8 @@ import (
 )
 
 type Config struct {
-	Repository []Repository `yaml:"repository"`
-	Storage    []Storage    `yaml:"storage"`
+	Repository []Repository   `yaml:"repository"`
+	Storage    []MultiStorage `yaml:"storage"`
 }
 
 type Repository struct {
@@ -21,6 +21,15 @@ type Storage struct {
 	Name string `yaml:"name"`
 	Type string `yaml:"type"`
 	Path string `yaml:"path"`
+}
+
+type MultiStorage struct {
+	Storage         `mapstructure:",squash"`
+	Endpoint        string `yaml:"endpoint"`
+	Bucket          string `yaml:"bucket"`
+	Region          string `yaml:"region"`
+	AccessKeyID     string `yaml:"accessKeyID"`
+	SecretAccessKey string `yaml:"secretAccessKey"`
 }
 
 var Path string

@@ -16,13 +16,13 @@ var Cmd = &cobra.Command{
 func runRun(cmd *cobra.Command, args []string) {
 	cfg := config.GetIns()
 
-	storageMap := make(map[string]config.Storage)
+	storageMap := make(map[string]config.MultiStorage)
 	for _, storage := range cfg.Storage {
 		storageMap[storage.Name] = storage
 	}
 
 	for _, repo := range cfg.Repository {
-		storages := make([]config.Storage, 0)
+		storages := make([]config.MultiStorage, 0)
 		for _, storage := range repo.Storage {
 			if s, ok := storageMap[storage]; !ok {
 				ui.Errorf("Storage %s not found in config", storage)

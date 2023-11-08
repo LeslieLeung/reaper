@@ -74,7 +74,7 @@ For configuration, you can checkout this [example](config/example.config.yaml).
 REAPER supports multiple storage types.
 
 - [x] File
-- [ ] AWS S3
+- [x] AWS S3
 
 ## Run as docker container
 

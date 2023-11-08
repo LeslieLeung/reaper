@@ -74,7 +74,7 @@ reaper run
 REAPER支持多种存储类型。
 
 - [x] 文件
-- [ ] AWS S3
+- [x] AWS S3
 
 ## 使用 Docker 运行
 

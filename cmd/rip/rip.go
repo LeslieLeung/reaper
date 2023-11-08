@@ -19,7 +19,7 @@ func runRip(cmd *cobra.Command, args []string) {
 	// find repo in config
 	cfg := config.GetIns()
 	var repo config.Repository
-	storages := make([]config.Storage, 0)
+	storages := make([]config.MultiStorage, 0)
 	var found bool
 	for _, repository := range cfg.Repository {
 		if repository.Name == repoName {
@@ -34,18 +34,15 @@ func runRip(cmd *cobra.Command, args []string) {
 	if repo.URL == "" {
 		ui.ErrorfExit("Repository %s has no URL", repoName)
 	}
-	found = false
 	for _, storage := range repo.Storage {
 		for _, s := range cfg.Storage {
 			if s.Name == storage {
 				storages = append(storages, s)
-				found = true
-				break
 			}
 		}
 	}
-	if !found {
-		ui.ErrorfExit("Storage %s not found in config", repo.Storage)
+	if len(storages) != len(repo.Storage) {
+		ui.ErrorfExit("Storage missing in config")
 	}
 
 	if err := rip.Rip(repo, storages); err != nil {

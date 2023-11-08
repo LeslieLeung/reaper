@@ -2,6 +2,11 @@ package storage
 
 import "time"
 
+const (
+	FileStorage = "file"
+	S3Storage   = "s3"
+)
+
 type Object struct {
 	Path         string
 	Content      []byte
