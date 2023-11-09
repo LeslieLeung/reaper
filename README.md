@@ -8,6 +8,7 @@ REpository ArchivER(REAPER) is a tool to archive repositories from any Git serve
 - [Usage](#usage)
   - [rip](#rip)
   - [run](#run)
+  - [daemon](#daemon)
 - [Configuration](#configuration)
 - [Storage](#storage)
 - [Run as docker container](#run-as-docker-container)
@@ -65,6 +66,16 @@ reaper run
 
 Combined with cron, you can archive repositories periodically.
 
+### daemon
+
+`daemon` runs REAPER as a daemon. It will archive all repositories defined in configuration periodically.
+
+```bash
+reaper daemon
+# You might want to run it with something like nohup
+nohup reaper daemon &
+```
+
 ## Configuration
 
 For configuration, you can checkout this [example](config/example.config.yaml).
@@ -99,6 +110,10 @@ For example compose file, see [docker-compose.yml](docker-compose.yml).
 ```bash
 docker compose up -d
 ```
+
+## FAQ
+
+See [FAQ](https://github.com/LeslieLeung/reaper/wiki/FAQ).
 
 ## Stargazers over time
 

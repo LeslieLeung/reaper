@@ -8,6 +8,7 @@ REpository ArchivER（REAPER）是一个用于从任何Git服务器归档 Git �
 - [使用方法](#使用方法)
   - [rip](#rip)
   - [run](#run)
+  - [daemon](#daemon)
 - [配置](#配置)
 - [存储](#存储)
 - [使用 Docker 运行](#使用-docker-运行)
@@ -65,6 +66,16 @@ reaper run
 
 结合cron，你可以定期归档 Git 仓库。
 
+### daemon
+
+`daemon`命令会启动一个守护进程，它会在后台运行，归档在配置中定义的所有 Git 仓库。
+
+```bash
+reaper daemon
+# 使用 nohup 后台运行
+nohup reaper daemon &
+```
+
 ## 配置
 
 有关配置，你可以查看此[示例](config/example.config.yaml)。
@@ -97,9 +108,13 @@ docker run --rm \
 示例Compose配置，见 [docker-compose.yml](docker-compose.yml)。
 
 ```bash
+git clone https://github.com/leslieleung/reaper.git
 docker compose up -d
 ```
 
+## 常见问题
+
+见 [FAQ](https://github.com/LeslieLeung/reaper/wiki/FAQ)。
 
 ## Stargazers over time
 

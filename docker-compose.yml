@@ -9,11 +9,13 @@ services:
       - TZ=Asia/Shanghai
     volumes:
       # config file path, modify it to yours
-      - ${pwd}/config/example.config.syaml:/config.yaml
+      - ${pwd}/config/example.config.yaml:/config.yaml
       # data path, to store downloaded repo, modify it to yours
       # the in-container path need to be the same as defined in config file
       - ${pwd}/repo:/repo
-    # defaultly archives all repositories defined in configuration.
+    # by default archives all repositories defined in configuration.
     command: ["run"]
     # or just archives a single repository defined in configuration.
     # command: ["rip", "reaper"]
+    # run as daemon
+    # command: ["daemon"]
