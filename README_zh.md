@@ -18,7 +18,7 @@ REpository ArchivER（REAPER）是一个用于从任何Git服务器归档 Git �
 ## 安装
 
 ```bash
-go install github.com/leslieleung/reaper@latest
+curl -sSfL https://raw.githubusercontent.com/LeslieLeung/reaper/main/install.sh | sh -s -- -b /usr/local/bin
 ```
 
 或从 [Release](https://github.com/LeslieLeung/reaper/releases) 获取。

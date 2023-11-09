@@ -18,7 +18,7 @@ REpository ArchivER(REAPER) is a tool to archive repositories from any Git serve
 ## Installation
 
 ```bash
-go install github.com/leslieleung/reaper@latest
+curl -sSfL https://raw.githubusercontent.com/LeslieLeung/reaper/main/install.sh | sh -s -- -b /usr/local/bin
 ```
 
 Or get from [Release](https://github.com/LeslieLeung/reaper/releases).
