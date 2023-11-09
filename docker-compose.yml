@@ -2,7 +2,7 @@ version: "3"
 
 services:
   reaper:
-    image: leslieleung/reaper:v0.0.0
+    image: leslieleung/reaper:v0.0.7
     environment:
       # set the timezone to be used by cron schedule
       # see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
