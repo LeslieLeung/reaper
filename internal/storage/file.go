@@ -25,9 +25,8 @@ func (f File) DeleteObject(identifier string) error {
 	panic("implement me")
 }
 
-// createPathIfNotExist creates the directory for the given file path if it does not exist.
-func createPathIfNotExist(filePath string) error {
-	dir := path.Dir(filePath)
+// CreateDirIfNotExist creates the directory for the given file path if it does not exist.
+func CreateDirIfNotExist(dir string) error {
 	_, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -48,7 +47,7 @@ func createPathIfNotExist(filePath string) error {
 }
 
 func (f File) PutObject(identifier string, data []byte) error {
-	if err := createPathIfNotExist(identifier); err != nil {
+	if err := CreateDirIfNotExist(path.Dir(identifier)); err != nil {
 		return err
 	}
 	return os.WriteFile(identifier, data, 0664)

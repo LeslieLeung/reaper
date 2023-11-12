@@ -11,10 +11,11 @@ type Config struct {
 }
 
 type Repository struct {
-	Name    string   `yaml:"name"`
-	URL     string   `yaml:"url"`
-	Cron    string   `yaml:"cron"`
-	Storage []string `yaml:"storage"`
+	Name     string   `yaml:"name"`
+	URL      string   `yaml:"url"`
+	Cron     string   `yaml:"cron"`
+	Storage  []string `yaml:"storage"`
+	UseCache bool     `yaml:"useCache"`
 }
 
 type Storage struct {

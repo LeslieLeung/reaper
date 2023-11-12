@@ -31,13 +31,23 @@ You have to create a configuration file to use REAPER.
 repository:
   - name: reaper
     url: github.com/leslieleung/reaper
+    cron: "0 * * * *"
     storage:
       - localFile
+      - backblaze
+    useCache: True
 
 storage:
   - name: localFile
     type: file
     path: ./repo
+  - name: backblaze
+    type: s3
+    endpoint: s3.us-west-000.backblazeb2.com
+    region: us-west-000
+    bucket: your-bucket-name
+    accessKeyID: your-access-key-id
+    secretAccessKey: your-secret-access-key
 ```
 
 Then you can run REAPER with the configuration file.
@@ -78,7 +88,9 @@ nohup reaper daemon &
 
 ## Configuration
 
-For configuration, you can checkout this [example](config/example.config.yaml).
+For configuration, you can check out this [example](config/example.config.yaml).
+
+For more details, see [Configuration](https://github.com/LeslieLeung/reaper/wiki/Configuration) in wiki.
 
 ## Storage
 

@@ -3,6 +3,7 @@ package rip
 import (
 	"bytes"
 	"context"
+	"errors"
 	"github.com/go-git/go-git/v5"
 	"github.com/google/uuid"
 	"github.com/leslieleung/reaper/internal/config"
@@ -16,35 +17,79 @@ import (
 )
 
 func Rip(repo config.Repository, storages []config.MultiStorage) error {
-	id := uuid.New().String()
+	useCache := repo.UseCache
 	// get current directory
 	currentDir, _ := os.Getwd()
-	// create a working directory
-	err := os.MkdirAll(path.Join(currentDir, ".reaper", id), 0774)
+
+	var workingDir string
+	if useCache {
+		workingDir = path.Join(currentDir, ".reaper")
+	} else {
+		id := uuid.New().String()
+		workingDir = path.Join(currentDir, ".reaper", id)
+	}
+
+	// create a working directory if not exist
+	err := storage.CreateDirIfNotExist(workingDir)
 	if err != nil {
 		ui.Errorf("Error creating working directory, %s", err)
 		return err
 	}
-	err = os.Chmod(path.Join(currentDir, ".reaper", id), 0774)
-	if err != nil {
-		ui.Errorf("Error changing permission of working directory, %s", err)
+
+	// get the repo name from the URL
+	repoName := path.Base(repo.URL)
+	// check if repo name is valid
+	if repoName == "." || repo.Name == "/" {
+		ui.Errorf("Invalid repository name")
 		return err
 	}
+	gitDir := path.Join(workingDir, repoName)
+	var exist bool
+	// check if the repo already exists
+	if _, err := os.Stat(path.Join(gitDir, ".git")); err == nil {
+		exist = true
+	}
+	// clone the repo if it does not exist, otherwise pull
+	if !exist {
+		_, err = git.PlainClone(gitDir, false, &git.CloneOptions{
+			URL:      "https://" + repo.URL,
+			Progress: os.Stdout,
+		})
 
-	// clone the repo
-	_, err = git.PlainClone(path.Join(currentDir, ".reaper", id), false, &git.CloneOptions{
-		URL:      "https://" + repo.URL,
-		Progress: os.Stdout,
-	})
+		if err != nil {
+			ui.Errorf("Error cloning repository, %s", err)
+			return err
+		}
 
-	if err != nil {
-		ui.Errorf("Error cloning repository, %s", err)
-		return err
+		ui.Printf("Repository %s cloned", repo.Name)
+	} else {
+		r, err := git.PlainOpen(gitDir)
+		if err != nil {
+			ui.Errorf("Error opening repository, %s", err)
+			return err
+		}
+		w, err := r.Worktree()
+		if err != nil {
+			ui.Errorf("Error getting worktree, %s", err)
+			return err
+		}
+		err = w.Pull(&git.PullOptions{
+			RemoteName: "origin",
+			Progress:   os.Stdout,
+		})
+		if err != nil {
+			if errors.Is(err, git.NoErrAlreadyUpToDate) {
+				ui.Printf("Repository %s already up to date", repo.Name)
+				return nil
+			}
+			ui.Errorf("Error pulling repository, %s", err)
+			return err
+		}
+		ui.Printf("Repository %s pulled", repo.Name)
 	}
 
-	ui.Printf("Repository %s cloned", repo.Name)
 	files, err := archiver.FilesFromDisk(nil, map[string]string{
-		path.Join(currentDir, ".reaper", id): repo.Name,
+		workingDir: repo.Name,
 	})
 	if err != nil {
 		ui.Errorf("Error reading files, %s", err)
@@ -89,10 +134,12 @@ func Rip(repo config.Repository, storages []config.MultiStorage) error {
 	}
 
 	// cleanup
-	err = os.RemoveAll(path.Join(currentDir, ".reaper", id))
-	if err != nil {
-		ui.Errorf("Error cleaning up working directory, %s", err)
-		return err
+	if !useCache {
+		err = os.RemoveAll(workingDir)
+		if err != nil {
+			ui.Errorf("Error cleaning up working directory, %s", err)
+			return err
+		}
 	}
 	return nil
 }

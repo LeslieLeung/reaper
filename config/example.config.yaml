@@ -1,10 +1,11 @@
 repository:
   - name: reaper
     url: github.com/leslieleung/reaper
-    cron: "0/3 * * * *"
+    cron: "0 * * * *"
     storage:
       - localFile
-      - blackblaze
+      - backblaze
+    useCache: True
 
 storage:
   - name: localFile

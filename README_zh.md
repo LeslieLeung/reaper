@@ -31,13 +31,23 @@ curl -sSfL https://raw.githubusercontent.com/LeslieLeung/reaper/main/install.sh 
 repository:
   - name: reaper
     url: github.com/leslieleung/reaper
+    cron: "0 * * * *"
     storage:
       - localFile
+      - backblaze
+    useCache: True
 
 storage:
   - name: localFile
     type: file
     path: ./repo
+  - name: backblaze
+    type: s3
+    endpoint: s3.us-west-000.backblazeb2.com
+    region: us-west-000
+    bucket: your-bucket-name
+    accessKeyID: your-access-key-id
+    secretAccessKey: your-secret-access-key
 ```
 
 然后，你可以使用配置文件运行REAPER。
@@ -79,6 +89,8 @@ nohup reaper daemon &
 ## 配置
 
 有关配置，你可以查看此[示例](config/example.config.yaml)。
+
+更多细节，可查看[配置文档](https://github.com/LeslieLeung/reaper/wiki/Configuration)。
 
 ## 存储
 
