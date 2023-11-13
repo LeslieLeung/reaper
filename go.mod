@@ -5,6 +5,7 @@ go 1.21
 require (
 	github.com/go-co-op/gocron v1.36.0
 	github.com/go-git/go-git/v5 v5.10.0
+	github.com/google/go-github/v56 v56.0.0
 	github.com/google/uuid v1.4.0
 	github.com/gookit/color v1.5.4
 	github.com/mholt/archiver/v4 v4.0.0-alpha.8
@@ -33,6 +34,7 @@ require (
 	github.com/go-git/go-billy/v5 v5.5.0 // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
 	github.com/golang/snappy v0.0.4 // indirect
+	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/hashicorp/errwrap v1.0.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect

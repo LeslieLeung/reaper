@@ -4,6 +4,7 @@
 
 REpository ArchivER（REAPER）是一个用于从任何Git服务器归档 Git 仓库的工具。
 
+- [功能](#功能)
 - [安装](#安装)
 - [使用方法](#使用方法)
   - [rip](#rip)
@@ -14,6 +15,14 @@ REpository ArchivER（REAPER）是一个用于从任何Git服务器归档 Git �
 - [使用 Docker 运行](#使用-docker-运行)
   - [Docker CLI](#docker-cli)
   - [Docker Compose](#docker-compose)
+
+## 功能
+
+- 从任何Git服务器归档 Git 仓库
+- 归档用户/组织的仓库（见 [配置](https://github.com/LeslieLeung/reaper/wiki/Configuration#repository))
+- 定时任务
+- 多种存储类型（见 [存储](#存储)）
+- Docker 支持（见 [使用 Docker 运行](#使用-docker-运行)）
 
 ## 安装
 

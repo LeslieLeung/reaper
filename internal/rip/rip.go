@@ -6,8 +6,8 @@ import (
 	"errors"
 	"github.com/go-git/go-git/v5"
 	"github.com/google/uuid"
-	"github.com/leslieleung/reaper/internal/config"
 	"github.com/leslieleung/reaper/internal/storage"
+	"github.com/leslieleung/reaper/internal/typedef"
 	"github.com/leslieleung/reaper/internal/ui"
 	"github.com/mholt/archiver/v4"
 	"os"
@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-func Rip(repo config.Repository, storages []config.MultiStorage) error {
+func Rip(repo typedef.Repository, storages []typedef.MultiStorage) error {
 	useCache := repo.UseCache
 	// get current directory
 	currentDir, _ := os.Getwd()

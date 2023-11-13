@@ -6,6 +6,11 @@ repository:
       - localFile
       - backblaze
     useCache: True
+  - name: me
+    orgName: LeslieLeung
+    type: user
+    storage:
+      - localFile
 
 storage:
   - name: localFile
@@ -18,3 +23,5 @@ storage:
     bucket: your-bucket-name
     accessKeyID: your-access-key-id
     secretAccessKey: your-secret-access-key
+
+githubToken: xxx

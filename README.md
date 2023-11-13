@@ -4,6 +4,7 @@ English | [简体中文](README_zh.md)
 
 REpository ArchivER(REAPER) is a tool to archive repositories from any Git servers.
 
+- [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
   - [rip](#rip)
@@ -14,6 +15,14 @@ REpository ArchivER(REAPER) is a tool to archive repositories from any Git serve
 - [Run as docker container](#run-as-docker-container)
   - [Docker CLI](#docker-cli)
   - [Docker Compose](#docker-compose)
+
+## Features
+
+- Archive repositories from any Git servers
+- Archive repositories of a user/an organization (see [Configuration](https://github.com/LeslieLeung/reaper/wiki/Configuration#repository))
+- Cron support
+- Multiple storage types (see [Storage](#storage))
+- Docker support (see [Run as docker container](#run-as-docker-container))
 
 ## Installation
 

@@ -4,6 +4,7 @@ import (
 	"github.com/go-co-op/gocron"
 	"github.com/leslieleung/reaper/internal/config"
 	"github.com/leslieleung/reaper/internal/rip"
+	"github.com/leslieleung/reaper/internal/typedef"
 	"github.com/leslieleung/reaper/internal/ui"
 	"github.com/spf13/cobra"
 	"time"
@@ -21,11 +22,11 @@ func runDaemon(cmd *cobra.Command, args []string) {
 	s := gocron.NewScheduler(time.Local)
 	s.SetMaxConcurrentJobs(3, gocron.WaitMode)
 
-	for _, repo := range config.GetRepositories() {
+	for _, repo := range rip.GetRepositories("") {
 		if repo.Cron == "" {
 			continue
 		}
-		storages := make([]config.MultiStorage, 0)
+		storages := make([]typedef.MultiStorage, 0)
 		for _, storage := range repo.Storage {
 			if s, ok := storageMap[storage]; !ok {
 				continue

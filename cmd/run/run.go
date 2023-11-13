@@ -3,6 +3,7 @@ package run
 import (
 	"github.com/leslieleung/reaper/internal/config"
 	"github.com/leslieleung/reaper/internal/rip"
+	"github.com/leslieleung/reaper/internal/typedef"
 	"github.com/leslieleung/reaper/internal/ui"
 	"github.com/spf13/cobra"
 )
@@ -16,8 +17,8 @@ var Cmd = &cobra.Command{
 func runRun(cmd *cobra.Command, args []string) {
 	storageMap := config.GetStorageMap()
 
-	for _, repo := range config.GetRepositories() {
-		storages := make([]config.MultiStorage, 0)
+	for _, repo := range rip.GetRepositories("") {
+		storages := make([]typedef.MultiStorage, 0)
 		for _, storage := range repo.Storage {
 			if s, ok := storageMap[storage]; !ok {
 				ui.Errorf("Storage %s not found in config", storage)

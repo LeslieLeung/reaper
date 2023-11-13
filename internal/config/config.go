@@ -1,36 +1,15 @@
 package config
 
 import (
+	"github.com/leslieleung/reaper/internal/typedef"
 	"github.com/leslieleung/reaper/internal/ui"
 	"github.com/spf13/viper"
 )
 
 type Config struct {
-	Repository []Repository   `yaml:"repository"`
-	Storage    []MultiStorage `yaml:"storage"`
-}
-
-type Repository struct {
-	Name     string   `yaml:"name"`
-	URL      string   `yaml:"url"`
-	Cron     string   `yaml:"cron"`
-	Storage  []string `yaml:"storage"`
-	UseCache bool     `yaml:"useCache"`
-}
-
-type Storage struct {
-	Name string `yaml:"name"`
-	Type string `yaml:"type"`
-	Path string `yaml:"path"`
-}
-
-type MultiStorage struct {
-	Storage         `mapstructure:",squash"`
-	Endpoint        string `yaml:"endpoint"`
-	Bucket          string `yaml:"bucket"`
-	Region          string `yaml:"region"`
-	AccessKeyID     string `yaml:"accessKeyID"`
-	SecretAccessKey string `yaml:"secretAccessKey"`
+	Repository  []typedef.Repository   `yaml:"repository"`
+	Storage     []typedef.MultiStorage `yaml:"storage"`
+	GitHubToken string                 `yaml:"githubToken"`
 }
 
 var Path string
@@ -55,14 +34,10 @@ func GetIns() *Config {
 	return ins
 }
 
-func GetStorageMap() map[string]MultiStorage {
-	storageMap := make(map[string]MultiStorage)
+func GetStorageMap() map[string]typedef.MultiStorage {
+	storageMap := make(map[string]typedef.MultiStorage)
 	for _, storage := range ins.Storage {
 		storageMap[storage.Name] = storage
 	}
 	return storageMap
-}
-
-func GetRepositories() []Repository {
-	return ins.Repository
 }
