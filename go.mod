@@ -3,7 +3,7 @@ module github.com/leslieleung/reaper
 go 1.21
 
 require (
-	github.com/go-co-op/gocron v1.37.0
+	github.com/go-co-op/gocron/v2 v2.0.2
 	github.com/go-co-op/gocron/v2 v2.0.2
 	github.com/go-git/go-git/v5 v5.10.1
 	github.com/google/go-github/v56 v56.0.0
