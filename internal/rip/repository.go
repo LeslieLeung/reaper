@@ -52,7 +52,8 @@ func addRepo(repo typedef.Repository, ret []typedef.Repository) []typedef.Reposi
 			})
 		}
 	default:
-		ui.Errorf("Unknown type %s", repo.Type)
+		// backward compatibility, default to repo
+		ret = append(ret, repo)
 	}
 	return ret
 }

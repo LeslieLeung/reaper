@@ -4,10 +4,8 @@ go 1.21
 
 require (
 	github.com/go-co-op/gocron/v2 v2.0.2
-	github.com/go-co-op/gocron/v2 v2.0.2
 	github.com/go-git/go-git/v5 v5.11.0
 	github.com/google/go-github/v56 v56.0.0
-	github.com/google/go-github/v57 v57.0.0
 	github.com/google/uuid v1.5.0
 	github.com/gookit/color v1.5.4
 	github.com/mholt/archiver/v4 v4.0.0-alpha.8
@@ -20,7 +18,6 @@ require (
 	dario.cat/mergo v1.0.0 // indirect
 	github.com/Microsoft/go-winio v0.6.1 // indirect
 	github.com/ProtonMail/go-crypto v0.0.0-20230828082145-3c4c8a2d2371 // indirect
-	github.com/acomagu/bufpipe v1.0.4 // indirect
 	github.com/andybalholm/brotli v1.0.4 // indirect
 	github.com/bodgit/plumbing v1.2.0 // indirect
 	github.com/bodgit/sevenzip v1.3.0 // indirect
@@ -42,6 +39,7 @@ require (
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
+	github.com/jonboulle/clockwork v0.4.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/kevinburke/ssh_config v1.2.0 // indirect
 	github.com/klauspost/compress v1.17.4 // indirect

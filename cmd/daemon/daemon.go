@@ -1,7 +1,7 @@
 package daemon
 
 import (
-	"github.com/go-co-op/gocron"
+	"github.com/go-co-op/gocron/v2"
 	"github.com/leslieleung/reaper/internal/config"
 	"github.com/leslieleung/reaper/internal/rip"
 	"github.com/leslieleung/reaper/internal/typedef"
@@ -19,8 +19,13 @@ var Cmd = &cobra.Command{
 func runDaemon(cmd *cobra.Command, args []string) {
 	storageMap := config.GetStorageMap()
 
-	s := gocron.NewScheduler(time.Local)
-	s.SetMaxConcurrentJobs(3, gocron.WaitMode)
+	s, err := gocron.NewScheduler(
+		gocron.WithLocation(time.Local),
+		gocron.WithLimitConcurrentJobs(3, gocron.LimitModeWait),
+	)
+	if err != nil {
+		ui.ErrorfExit("Error creating scheduler, %s", err)
+	}
 
 	for _, repo := range rip.GetRepositories("") {
 		if repo.Cron == "" {
@@ -34,12 +39,15 @@ func runDaemon(cmd *cobra.Command, args []string) {
 				storages = append(storages, s)
 			}
 		}
-		_, err := s.Cron(repo.Cron).Do(rip.Rip, repo, storages)
+		_, err := s.NewJob(
+			gocron.CronJob(repo.Cron, false),
+			gocron.NewTask(rip.Rip, repo, storages),
+		)
 		if err != nil {
 			ui.Errorf("Error scheduling %s, %s", repo.Name, err)
 		}
 		ui.Printf("Scheduled %s, cron: %s", repo.Name, repo.Cron)
 	}
 	ui.Printf("Starting daemon")
-	s.StartBlocking()
+	s.Start()
 }
