@@ -10,6 +10,7 @@ REpository ArchivER（REAPER）是一个用于从任何Git服务器归档 Git �
   - [rip](#rip)
   - [run](#run)
   - [daemon](#daemon)
+  - [bury](#bury)
 - [配置](#配置)
 - [存储](#存储)
 - [使用 Docker 运行](#使用-docker-运行)
@@ -84,6 +85,14 @@ reaper run
 ```
 
 结合cron，你可以定期归档 Git 仓库。
+
+### bury
+
+`bury`命令会归档指定 Git 仓库的所有发布产物。
+
+```bash
+reaper bury reaper
+```
 
 ### daemon
 

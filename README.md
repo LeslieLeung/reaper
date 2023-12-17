@@ -9,6 +9,7 @@ REpository ArchivER(REAPER) is a tool to archive repositories from any Git serve
 - [Usage](#usage)
   - [rip](#rip)
   - [run](#run)
+  - [bury](#bury)
   - [daemon](#daemon)
 - [Configuration](#configuration)
 - [Storage](#storage)
@@ -84,6 +85,14 @@ reaper run
 ```
 
 Combined with cron, you can archive repositories periodically.
+
+### bury
+
+`bury` archives all release assets of a repository.
+
+```bash
+reaper bury reaper
+```
 
 ### daemon
 

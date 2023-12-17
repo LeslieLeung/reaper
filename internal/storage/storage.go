@@ -1,6 +1,10 @@
 package storage
 
-import "time"
+import (
+	"errors"
+	"github.com/leslieleung/reaper/internal/typedef"
+	"time"
+)
 
 const (
 	FileStorage = "file"
@@ -22,4 +26,20 @@ type Storage interface {
 	PutObject(identifier string, data []byte) error
 	// DeleteObject deletes the object identified by the given identifier.
 	DeleteObject(identifier string) error
+}
+
+func GetStorage(storage typedef.MultiStorage) (Storage, error) {
+	var (
+		backend Storage
+		err     error
+	)
+	switch storage.Type {
+	case FileStorage:
+		backend = &File{}
+	case S3Storage:
+		backend, err = New(storage.Endpoint, storage.Bucket, storage.Region, storage.AccessKeyID, storage.SecretAccessKey)
+	default:
+		err = errors.New("unknown storage type")
+	}
+	return backend, err
 }

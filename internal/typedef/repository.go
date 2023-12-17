@@ -9,3 +9,11 @@ type Repository struct {
 	Type     string   `yaml:"type"` // repo, user, org (default: repo)
 	OrgName  string   `yaml:"orgName"`
 }
+
+func (r *Repository) GetType() string {
+	// backward compatibility, default to repo
+	if r.Type == "" {
+		return TypeRepo
+	}
+	return r.Type
+}

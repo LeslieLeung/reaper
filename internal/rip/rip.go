@@ -113,19 +113,12 @@ func Rip(repo typedef.Repository, storages []typedef.MultiStorage) error {
 
 	// handle storages
 	for _, s := range storages {
-		var err error
-		switch s.Type {
-		case storage.FileStorage:
-			fileBackend := storage.File{}
-			err = fileBackend.PutObject(path.Join(s.Path, base), archive.Bytes())
-		case storage.S3Storage:
-			s3Backend, err := storage.New(s.Endpoint, s.Bucket, s.Region, s.AccessKeyID, s.SecretAccessKey)
-			if err != nil {
-				ui.Errorf("Error creating S3 backend, %s", err)
-				return err
-			}
-			err = s3Backend.PutObject(base, archive.Bytes())
+		backend, err := storage.GetStorage(s)
+		if err != nil {
+			ui.Errorf("Error getting backend, %s", err)
+			return err
 		}
+		err = backend.PutObject(path.Join(s.Path, base), archive.Bytes())
 		if err != nil {
 			ui.Errorf("Error storing file, %s", err)
 			return err

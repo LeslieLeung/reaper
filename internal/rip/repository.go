@@ -26,7 +26,7 @@ func GetRepositories(name string) []typedef.Repository {
 }
 
 func addRepo(repo typedef.Repository, ret []typedef.Repository) []typedef.Repository {
-	switch repo.Type {
+	switch repo.GetType() {
 	case typedef.TypeRepo:
 		ret = append(ret, repo)
 	case typedef.TypeUser, typedef.TypeOrg:
@@ -52,8 +52,7 @@ func addRepo(repo typedef.Repository, ret []typedef.Repository) []typedef.Reposi
 			})
 		}
 	default:
-		// backward compatibility, default to repo
-		ret = append(ret, repo)
+		ui.Errorf("Invalid repository type %s", repo.Type)
 	}
 	return ret
 }
