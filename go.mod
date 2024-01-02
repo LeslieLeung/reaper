@@ -3,7 +3,7 @@ module github.com/leslieleung/reaper
 go 1.21
 
 require (
-	github.com/go-co-op/gocron/v2 v2.0.2
+	github.com/go-co-op/gocron/v2 v2.1.2
 	github.com/go-git/go-git/v5 v5.11.0
 	github.com/google/go-github/v56 v56.0.0
 	github.com/google/uuid v1.5.0
@@ -75,7 +75,7 @@ require (
 	go.uber.org/multierr v1.9.0 // indirect
 	go4.org v0.0.0-20200411211856-f5505b9728dd // indirect
 	golang.org/x/crypto v0.16.0 // indirect
-	golang.org/x/exp v0.0.0-20231206192017-f3f8817b8deb // indirect
+	golang.org/x/exp v0.0.0-20231219180239-dc181d75b848 // indirect
 	golang.org/x/mod v0.14.0 // indirect
 	golang.org/x/net v0.19.0 // indirect
 	golang.org/x/sys v0.15.0 // indirect
