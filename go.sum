@@ -104,6 +104,8 @@ github.com/go-co-op/gocron/v2 v2.0.2 h1:ILH93GnL8lk6OJXTuiXnGfvvUISolIVOppbapq7r
 github.com/go-co-op/gocron/v2 v2.0.2/go.mod h1:DodDqurAedt8cj/dbFM8obVSgPv0Vch80eF7neNVwmg=
 github.com/go-co-op/gocron/v2 v2.2.4 h1:fL6a8/U+BJQ9UbaeqKxua8wY02w4ftKZsxPzLSNOCKk=
 github.com/go-co-op/gocron/v2 v2.2.4/go.mod h1:igssOwzZkfcnu3m2kwnCf/mYj4SmhP9ecSgmYjCOHkk=
+github.com/go-co-op/gocron/v2 v2.2.6 h1:sKRt4kemEzY9HnBx9BBnFDPXoOxBy77V4WVtoouhJgg=
+github.com/go-co-op/gocron/v2 v2.2.6/go.mod h1:mZx3gMSlFnb97k3hRqX3+GdlG3+DUwTh6B8fnsTScXg=
 github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 h1:+zs/tPmkDkHx3U66DAb0lQFJrpS6731Oaa12ikc+DiI=
 github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376/go.mod h1:an3vInlBmSxCcxctByoQdvwPiA7DTK7jaaFDBTtu0ic=
 github.com/go-git/go-billy/v5 v5.5.0 h1:yEY4yhzCDuMGSv83oGxiBotRzhwhNr8VZyphhiu+mTU=
