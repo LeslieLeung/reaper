@@ -6,7 +6,7 @@ require (
 	github.com/go-co-op/gocron/v2 v2.2.6
 	github.com/go-git/go-git/v5 v5.11.0
 	github.com/google/go-github/v56 v56.0.0
-	github.com/google/go-github/v60 v60.0.0
+	github.com/google/go-github/v61 v61.0.0
 	github.com/google/uuid v1.6.0
 	github.com/gookit/color v1.5.4
 	github.com/mholt/archiver/v4 v4.0.0-alpha.8
