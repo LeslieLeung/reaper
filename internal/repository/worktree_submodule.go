@@ -7,15 +7,102 @@ import (
 	"os"
 	"path"
 
+	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/format/index"
+	"github.com/go-git/go-git/v5/storage"
 )
 
 var errManagedIndexRecovery = errors.New("managed index update failed")
 
+// Parent sync does not recursively update submodules. Present them as
+// uninitialized to go-git so status compares the parent's gitlink, rather than
+// the child's HEAD. The view shares refs, objects, index and files, but never
+// changes the stored configuration or the child's repository.
+type parentWorktreeStorage struct {
+	storage.Storer
+	filesystem billy.Filesystem
+}
+
+func (s parentWorktreeStorage) Config() (*config.Config, error) {
+	cfg, err := s.Storer.Config()
+	if err != nil {
+		return nil, err
+	}
+	view := *cfg
+	view.Submodules = nil
+	return &view, nil
+}
+
+func (s parentWorktreeStorage) Index() (*index.Index, error) {
+	idx, err := s.Storer.Index()
+	if err != nil {
+		return nil, err
+	}
+	// Memory storage returns its live index pointer. Reset must build a copy
+	// so SetIndex can check (and retain) the original before accepting writes.
+	view := *idx
+	view.Entries = make([]*index.Entry, len(idx.Entries))
+	for i, entry := range idx.Entries {
+		copy := *entry
+		view.Entries[i] = &copy
+	}
+	return &view, nil
+}
+
+// Reset rebuilds the index before touching files, then recursively removes
+// paths that disappear from the target tree. Reject dropping a populated
+// gitlink at that boundary, retaining the old index for safe recovery/retries.
+func (s parentWorktreeStorage) SetIndex(next *index.Index) error {
+	previous, err := s.Storer.Index()
+	if err != nil {
+		return err
+	}
+	gitlinks := make(map[string]bool)
+	for _, entry := range next.Entries {
+		if entry.Mode == filemode.Submodule {
+			gitlinks[entry.Name] = true
+		}
+	}
+	for _, entry := range previous.Entries {
+		if entry.Mode != filemode.Submodule || gitlinks[entry.Name] {
+			continue
+		}
+		children, err := s.filesystem.ReadDir(entry.Name)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect transitioning submodule %s: %w", entry.Name, err)
+		}
+		if len(children) != 0 {
+			return fmt.Errorf("cannot remove or replace populated submodule %s during managed sync", entry.Name)
+		}
+	}
+	return s.Storer.SetIndex(next)
+}
+
+func parentManagedWorktree(repo *git.Repository, worktree *git.Worktree) (*git.Worktree, error) {
+	view, err := git.Open(parentWorktreeStorage{Storer: repo.Storer, filesystem: worktree.Filesystem}, worktree.Filesystem)
+	if err != nil {
+		return nil, fmt.Errorf("open managed parent worktree: %w", err)
+	}
+	parent, err := view.Worktree()
+	if err != nil {
+		return nil, fmt.Errorf("read managed parent worktree: %w", err)
+	}
+	parent.Excludes = worktree.Excludes
+	return parent, nil
+}
+
 func checkoutManagedWorktree(repo *git.Repository, worktree *git.Worktree, opts *git.CheckoutOptions) error {
 	if _, err := unmappedManagedGitlinks(repo, worktree); err != nil {
+		return err
+	}
+	worktree, err := parentManagedWorktree(repo, worktree)
+	if err != nil {
 		return err
 	}
 	return worktree.Checkout(opts)
@@ -69,6 +156,10 @@ func unmappedManagedGitlinks(repo *git.Repository, worktree *git.Worktree) (map[
 // early; use the current LOCAL HEAD, since Pull may already have advanced it.
 func pullManagedWorktree(ctx context.Context, repo *git.Repository, worktree *git.Worktree, opts *git.PullOptions) (result error) {
 	unmapped, err := unmappedManagedGitlinks(repo, worktree)
+	if err != nil {
+		return err
+	}
+	worktree, err = parentManagedWorktree(repo, worktree)
 	if err != nil {
 		return err
 	}
