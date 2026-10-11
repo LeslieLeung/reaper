@@ -48,6 +48,10 @@ func restoreManagedWorktreeWithChmod(repo *git.Repository, worktree *git.Worktre
 	if _, err := unmappedManagedGitlinks(repo, worktree); err != nil {
 		return err
 	}
+	worktree, err = parentManagedWorktree(repo, worktree)
+	if err != nil {
+		return err
+	}
 	if err := worktree.Reset(&git.ResetOptions{Mode: git.HardReset, Commit: headBefore.Hash()}); err != nil {
 		return fmt.Errorf("reset managed worktree to local %s: %w", headBefore.Name().Short(), err)
 	}
@@ -85,8 +89,8 @@ func restoreManagedWorktreeWithChmod(repo *git.Repository, worktree *git.Worktre
 		}
 		// Without a .gitmodules mapping, go-git sees an empty gitlink
 		// directory as deleted. The parent repository owns only its index
-		// entry, not the submodule's files. Never exempt ordinary files or
-		// populated submodules from verification.
+		// entry, not the submodule's files. Populated unmapped gitlinks were
+		// rejected before resetting; ordinary files are never exempt.
 		if gitlinks[name] && fileStatus.Staging == git.Unmodified && fileStatus.Worktree == git.Deleted {
 			children, readErr := worktree.Filesystem.ReadDir(name)
 			if readErr == nil && len(children) == 0 {

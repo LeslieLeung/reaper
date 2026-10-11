@@ -7,15 +7,215 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/filemode"
 	"github.com/go-git/go-git/v5/plumbing/format/index"
 	"github.com/go-git/go-git/v5/storage"
+	"github.com/go-git/go-git/v5/storage/memory"
 	"github.com/stretchr/testify/require"
 )
 
 const testGitlinkPath = "runtime/gpu/tensorrt_fastertransformer/FasterTransformer"
+
+func TestManagedRecoveryPreservesMismatchedSubmodule(t *testing.T) {
+	for _, moduleName := range []string{"transformer", testGitlinkPath} {
+		t.Run(moduleName, func(t *testing.T) {
+			_, local, worktree, child := newMismatchedSubmoduleClone(t, moduleName, false)
+			before, err := local.Head()
+			require.NoError(t, err)
+			childBefore, err := child.Head()
+			require.NoError(t, err)
+			cfgBefore, err := local.Config()
+			require.NoError(t, err)
+			status, err := worktree.Status()
+			require.NoError(t, err)
+			require.Equal(t, git.Modified, status.File(testGitlinkPath).Worktree)
+
+			for attempt := 0; attempt < 2; attempt++ {
+				require.NoError(t, checkoutManagedWorktree(local, worktree, &git.CheckoutOptions{Branch: before.Name(), Force: true}))
+				writeBillyFile(t, worktree.Filesystem, "tracked.txt", []byte("parent dirt"), 0o644)
+				require.NoError(t, restoreManagedWorktree(local, worktree))
+				require.Equal(t, "original", string(readBillyFile(t, worktree.Filesystem, "tracked.txt")))
+			}
+			after, err := local.Head()
+			require.NoError(t, err)
+			require.Equal(t, before, after)
+			childAfter, err := child.Head()
+			require.NoError(t, err)
+			require.Equal(t, childBefore, childAfter)
+			require.Equal(t, "local edits", string(readBillyFile(t, worktree.Filesystem, testGitlinkPath+"/tracked.txt")))
+			require.Equal(t, "keep me", string(readBillyFile(t, worktree.Filesystem, testGitlinkPath+"/local.txt")))
+			cfgAfter, err := local.Config()
+			require.NoError(t, err)
+			require.Equal(t, cfgBefore, cfgAfter, "the view must not persist configuration changes")
+		})
+	}
+}
+
+func TestManagedPullWithMismatchedSubmodule(t *testing.T) {
+	for _, scenario := range []string{"update", "up to date", "ordinary dirt", "missing remote", "cancelled", "diverged"} {
+		t.Run(scenario, func(t *testing.T) {
+			remoteTree, local, worktree, child := newMismatchedSubmoduleClone(t, "transformer", false)
+			before, err := local.Head()
+			require.NoError(t, err)
+			childBefore, err := child.Head()
+			require.NoError(t, err)
+			cfgBefore, err := local.Config()
+			require.NoError(t, err)
+			opts := &git.PullOptions{RemoteName: "origin"}
+			ctx := context.Background()
+			want := git.NoErrAlreadyUpToDate
+			expected := plumbing.NewHash("f04cc0a2a167c2552318ff73b9a3b4fbad60e9c7")
+			switch scenario {
+			case "update", "ordinary dirt":
+				remote, err := git.PlainOpen(remoteTree.Filesystem.Root())
+				require.NoError(t, err)
+				idx, err := remote.Storer.Index()
+				require.NoError(t, err)
+				entry, err := idx.Entry(testGitlinkPath)
+				require.NoError(t, err)
+				expected = plumbing.NewHash("1111111111111111111111111111111111111111")
+				entry.Hash = expected
+				require.NoError(t, remote.Storer.SetIndex(idx))
+				commitTestFile(t, remoteTree, "tracked.txt", "upstream update")
+				want = nil
+				if scenario == "ordinary dirt" {
+					writeBillyFile(t, worktree.Filesystem, "tracked.txt", []byte("parent dirt"), 0o644)
+					want = git.ErrUnstagedChanges
+				}
+			case "missing remote":
+				opts.RemoteName = "missing"
+				want = git.ErrRemoteNotFound
+			case "cancelled":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			case "diverged":
+				commitTestFile(t, remoteTree, "remote.txt", "upstream history")
+				commitTestFile(t, worktree, "parent.txt", "local history")
+				before, err = local.Head()
+				require.NoError(t, err)
+				want = git.ErrNonFastForwardUpdate
+			}
+			err = pullManagedWorktree(ctx, local, worktree, opts)
+			if scenario == "cancelled" {
+				require.ErrorIs(t, err, context.Canceled)
+			} else if want == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, want)
+			}
+			if scenario == "update" {
+				require.Equal(t, "upstream update", string(readBillyFile(t, worktree.Filesystem, "tracked.txt")))
+				require.NoError(t, restoreManagedWorktree(local, worktree))
+			} else if scenario == "ordinary dirt" {
+				require.Equal(t, "parent dirt", string(readBillyFile(t, worktree.Filesystem, "tracked.txt")))
+			} else if scenario != "ordinary dirt" {
+				after, err := local.Head()
+				require.NoError(t, err)
+				require.Equal(t, before, after)
+			}
+			if scenario != "ordinary dirt" {
+				idx, err := local.Storer.Index()
+				require.NoError(t, err)
+				entry, err := idx.Entry(testGitlinkPath)
+				require.NoError(t, err)
+				require.Equal(t, filemode.Submodule, entry.Mode)
+				require.Equal(t, expected, entry.Hash)
+			}
+			_, err = local.CommitObject(before.Hash())
+			require.NoError(t, err, "old parent history must remain recoverable")
+			childAfter, err := child.Head()
+			require.NoError(t, err)
+			require.Equal(t, childBefore, childAfter)
+			require.Equal(t, "local edits", string(readBillyFile(t, worktree.Filesystem, testGitlinkPath+"/tracked.txt")))
+			require.Equal(t, "keep me", string(readBillyFile(t, worktree.Filesystem, testGitlinkPath+"/local.txt")))
+			cfgAfter, err := local.Config()
+			require.NoError(t, err)
+			require.Equal(t, cfgBefore, cfgAfter)
+		})
+	}
+}
+
+func TestManagedSubmoduleTransitionsPreserveLocalFiles(t *testing.T) {
+	for _, transition := range []string{"removed", "replaced", "moved", "memory removal"} {
+		t.Run(transition, func(t *testing.T) {
+			remoteTree, local, worktree, child := newMismatchedSubmoduleClone(t, "transformer", transition == "memory removal")
+			childBefore, err := child.Head()
+			require.NoError(t, err)
+			remote, err := git.PlainOpen(remoteTree.Filesystem.Root())
+			require.NoError(t, err)
+			idx, err := remote.Storer.Index()
+			require.NoError(t, err)
+			entry, err := idx.Remove(testGitlinkPath)
+			require.NoError(t, err)
+			if transition == "moved" {
+				entry.Name = "moved-child"
+				idx.Entries = append(idx.Entries, entry)
+			}
+			require.NoError(t, remote.Storer.SetIndex(idx))
+			_, err = remoteTree.Remove(".gitmodules")
+			require.NoError(t, err)
+			if transition == "replaced" {
+				writeBillyFile(t, remoteTree.Filesystem, testGitlinkPath+"/replacement.txt", []byte("upstream replacement"), 0o644)
+				_, err = remoteTree.Add(testGitlinkPath + "/replacement.txt")
+				require.NoError(t, err)
+			}
+			target, err := remoteTree.Commit("transition child", &git.CommitOptions{Author: testSignature()})
+			require.NoError(t, err)
+			require.Error(t, pullManagedWorktree(context.Background(), local, worktree, &git.PullOptions{RemoteName: "origin"}))
+			// Pull may already advance the local HEAD. Neither recovery nor a
+			// checkout retry may discard the now-unmapped child's local files.
+			require.Error(t, restoreManagedWorktree(local, worktree))
+			require.Error(t, checkoutManagedWorktree(local, worktree, &git.CheckoutOptions{Hash: target, Force: true}))
+			require.Equal(t, "local edits", string(readBillyFile(t, worktree.Filesystem, testGitlinkPath+"/tracked.txt")))
+			require.Equal(t, "keep me", string(readBillyFile(t, worktree.Filesystem, testGitlinkPath+"/local.txt")))
+			childAfter, err := child.Head()
+			require.NoError(t, err)
+			require.Equal(t, childBefore, childAfter)
+			idx, err = local.Storer.Index()
+			require.NoError(t, err)
+			_, err = idx.Entry(testGitlinkPath)
+			require.NoError(t, err, "retain the gitlink for safe retries")
+		})
+	}
+}
+
+func newMismatchedSubmoduleClone(t *testing.T, moduleName string, inMemory bool) (*git.Worktree, *git.Repository, *git.Worktree, *git.Repository) {
+	t.Helper()
+	remote, err := git.PlainInit(t.TempDir(), false)
+	require.NoError(t, err)
+	remoteTree, err := remote.Worktree()
+	require.NoError(t, err)
+	commitTestFile(t, remoteTree, "tracked.txt", "original")
+	addTestGitlink(t, remote, remoteTree, true)
+	if moduleName != "transformer" {
+		commitTestFile(t, remoteTree, ".gitmodules", "[submodule \""+moduleName+"\"]\n\tpath = "+testGitlinkPath+"\n\turl = https://example.invalid/transformer.git\n")
+	}
+	opts := &git.CloneOptions{URL: remoteTree.Filesystem.Root()}
+	var local *git.Repository
+	if inMemory {
+		local, err = git.Clone(memory.NewStorage(), memfs.New(), opts)
+	} else {
+		local, err = git.PlainClone(filepath.Join(t.TempDir(), "clone"), false, opts)
+	}
+	require.NoError(t, err)
+	worktree, err := local.Worktree()
+	require.NoError(t, err)
+	module, err := worktree.Submodule(moduleName)
+	require.NoError(t, err)
+	require.NoError(t, module.Init())
+	child, err := module.Repository()
+	require.NoError(t, err)
+	childTree, err := child.Worktree()
+	require.NoError(t, err)
+	commitTestFile(t, childTree, "tracked.txt", "local submodule history")
+	writeBillyFile(t, childTree.Filesystem, "tracked.txt", []byte("local edits"), 0o644)
+	writeBillyFile(t, childTree.Filesystem, "local.txt", []byte("keep me"), 0o644)
+	return remoteTree, local, worktree, child
+}
 
 func TestPullWithUnmappedGitlink(t *testing.T) {
 	remote, err := git.PlainInit(t.TempDir(), false)
