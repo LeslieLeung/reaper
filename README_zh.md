@@ -135,17 +135,29 @@ Repositories 页面提供服务端全局健康计数、失败/从未同步/逾�
 
 ## 配置
 
-Issue、Discussion 和 Release 使用的 GitHub API 请求会在每个 gitrieve 进程内统一协调。可选配置及默认值如下：
+GitHub API 请求会在每个 gitrieve 进程内统一协调。以下示例使用属于两个不同 GitHub 用户的令牌：
 
 ```yaml
-githubApiConcurrency: 2
+githubAccounts:
+  - name: alice
+    token: alice-personal-access-token
+  - name: bob
+    token: bob-personal-access-token
+githubApiConcurrency: 4
+githubAccountConcurrency: 2
 githubMinRequestInterval: 200ms
 githubLowRemainingThreshold: 100
 githubScheduleJitter: 30s
 syncOverdueGrace: 30m
 syncStuckThreshold: 24h
-cocurrencyNum: 6
+cocurrencyNum: 12
 ```
+
+`githubAccounts` 默认为空列表。非空账号池优先于 `githubToken`；否则沿用单令牌配置，未设置令牌时 REST 使用匿名访问。账号名称和令牌不能为空或纯空白，名称必须唯一。每个池内账号受 `githubAccountConcurrency` 限制（默认 `2`），所有账号同时受进程级 `githubApiConcurrency` 总并发上限限制（默认 `2`）。旧单令牌模式保持仅受总并发限制的行为。`cocurrencyNum` 限制仓库任务数，与 API 并发限制独立。
+
+REST 和 GraphQL 共享每个凭据的并发上限和请求节奏。`githubMinRequestInterval` 按凭据控制请求启动间隔；主配额耗尽只暂停对应账号的对应 API 资源，次级限流会暂停整个进程。重复令牌共享限制，同一 GitHub 用户的多个令牌共享该用户的配额。使用不同用户可利用各自可用配额的总和，但不会增加任何单个用户的 GitHub 配额。备份私有仓库时，池内用户及令牌需具备所需访问权限；无访问权限的账号可回退到其他可用账号。
+
+导入预览保留账号名称并分别遮蔽所有令牌。全局选项的 `existing` 与 `imported` 选择分别应用于 `githubAccounts` 和 `githubAccountConcurrency`；导出及保存的配置包含真实令牌。
 
 `syncOverdueGrace` 和 `syncStuckThreshold` 的默认值分别为 `30m` 和 `24h`；
 卡住阈值同时适用于 `pending` 和 `running`，非正值会恢复为默认值。沿用已有拼写的
@@ -154,7 +166,7 @@ Cron、手动执行和批量重试实际并发数；超出上限的任务保持 
 重复活动任务会被拒绝。服务重启时，上一进程遗留的 `pending`/`running` 执行及
 组件记录会被对账为 `failed`，不会永久显示为活动状态。
 
-设置 `githubScheduleJitter: 0s` 可关闭错峰。错峰仅应用于 daemon 的 cron 任务，手工命令和 Web API 任务仍会立即开始。这些配置用于降低请求突发，不会增加 GitHub 配额，也不会协调不同进程或主机。
+设置 `githubScheduleJitter: 0s` 可关闭错峰。错峰仅应用于 daemon 的 cron 任务，手工命令和 Web API 任务仍会立即开始。请求节奏与并发配置用于降低请求突发，不会协调不同进程或主机。
 
 有关配置，你可以查看此[示例](config/example.config.yaml)。
 

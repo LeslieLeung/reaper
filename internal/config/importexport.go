@@ -3,9 +3,11 @@ package config
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
+	"github.com/wnarutou/gitrieve/internal/githubapi"
 	"github.com/wnarutou/gitrieve/internal/typedef"
 	"gopkg.in/yaml.v3"
 )
@@ -59,6 +61,8 @@ type ExportConfig struct {
 	Repository                  []typedef.Repository   `yaml:"repository"`
 	Storage                     []typedef.MultiStorage `yaml:"storage"`
 	GitHubToken                 string                 `yaml:"githubToken"`
+	GitHubAccounts              []githubapi.Account    `yaml:"githubAccounts"`
+	GitHubAccountConcurrency    uint                   `yaml:"githubAccountConcurrency"`
 	ConcurrencyNum              uint                   `yaml:"cocurrencyNum"`
 	ReleaseSizeLimit            int                    `yaml:"releaseSizeLimit"`
 	ReleaseNumLimit             int                    `yaml:"releaseNumLimit"`
@@ -111,6 +115,8 @@ func ExportFrom(cfg *Config) (string, error) {
 		Repository:                  cfg.Repository,
 		Storage:                     cfg.Storage,
 		GitHubToken:                 cfg.GitHubToken,
+		GitHubAccounts:              cfg.GitHubAccounts,
+		GitHubAccountConcurrency:    cfg.GitHubAccountConcurrency,
 		ConcurrencyNum:              cfg.ConcurrencyNum,
 		ReleaseSizeLimit:            cfg.ReleaseSizeLimit,
 		ReleaseNumLimit:             cfg.ReleaseNumLimit,
@@ -239,6 +245,9 @@ func seedExportDefaults(doc *ExportConfig, jitterPresent bool) {
 	if doc.GitHubAPIConcurrency == 0 {
 		doc.GitHubAPIConcurrency = 2
 	}
+	if doc.GitHubAccountConcurrency == 0 {
+		doc.GitHubAccountConcurrency = 2
+	}
 	if time.Duration(doc.GitHubMinRequestInterval) <= 0 {
 		doc.GitHubMinRequestInterval = DurationString(200 * time.Millisecond)
 	}
@@ -294,10 +303,10 @@ func ParseImport(yamlStr string) (*ExportConfig, error) {
 // ValidateImport checks an imported document for the rules that apply before
 // any import: every repository needs a usable identity (non-empty URL or
 // orgName), no two imported repositories share a normalized URL, and storage
-// names are non-empty and unique. Returns every violation so the caller can
-// surface them all at once.
+// names are non-empty and unique, and GitHub accounts have nonblank credentials
+// and unique names. Returns every violation without including credential values.
 func ValidateImport(doc *ExportConfig) []string {
-	var errs []string
+	errs := validateGitHubAccounts(doc.GitHubAccounts)
 	seen := map[string]string{}
 	for _, repo := range doc.Repository {
 		if repo.Key() == "" {
@@ -320,6 +329,24 @@ func ValidateImport(doc *ExportConfig) []string {
 			errs = append(errs, fmt.Sprintf("storage %q is duplicated", st.Name))
 		}
 		seenStorage[st.Name] = true
+	}
+	return errs
+}
+
+func validateGitHubAccounts(accounts []githubapi.Account) []string {
+	var errs []string
+	seenNames := make(map[string]bool, len(accounts))
+	for i, account := range accounts {
+		name := strings.TrimSpace(account.Name)
+		if name == "" {
+			errs = append(errs, fmt.Sprintf("githubAccounts entry %d has a blank name", i+1))
+		} else if seenNames[name] {
+			errs = append(errs, fmt.Sprintf("githubAccounts entry %d has a duplicate name", i+1))
+		}
+		seenNames[name] = true
+		if strings.TrimSpace(account.Token) == "" {
+			errs = append(errs, fmt.Sprintf("githubAccounts entry %d has a blank token", i+1))
+		}
 	}
 	return errs
 }

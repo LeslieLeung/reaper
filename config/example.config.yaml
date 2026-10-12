@@ -63,13 +63,21 @@ storage:
     secretAccessKey: your-secret-access-key
 
 githubToken: xxx
-githubApiConcurrency: 2
+# Optional pool: use tokens belonging to two different GitHub users. A nonempty
+# pool takes precedence over githubToken. Leave it empty to use the legacy token.
+githubAccounts:
+  - name: alice
+    token: alice-personal-access-token
+  - name: bob
+    token: bob-personal-access-token
+githubApiConcurrency: 4
+githubAccountConcurrency: 2
 githubMinRequestInterval: 200ms
 githubLowRemainingThreshold: 100
 githubScheduleJitter: 30s
 syncOverdueGrace: 30m
 syncStuckThreshold: 24h
-cocurrencyNum: 6
+cocurrencyNum: 12
 releaseSizeLimit: 300000000
 releaseNumLimit: 3
 

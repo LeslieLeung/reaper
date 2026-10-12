@@ -8,18 +8,29 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/wnarutou/gitrieve/internal/config"
+	"github.com/wnarutou/gitrieve/internal/githubapi"
 	"github.com/wnarutou/gitrieve/internal/typedef"
 )
 
 // secretFields are config values never echoed in plaintext in a diff.
 var secretFields = map[string]bool{
 	"githubToken":     true,
+	"githubAccounts":  true,
 	"authToken":       true,
 	"secretAccessKey": true,
 }
 
-// maskSecret returns "***" for a non-empty secret value, the value otherwise.
+// maskSecret masks nonempty secrets, preserving account labels in pool lists.
 func maskSecret(field string, v interface{}) interface{} {
+	if accounts, ok := v.([]githubapi.Account); ok && field == "githubAccounts" {
+		masked := append([]githubapi.Account(nil), accounts...)
+		for i := range masked {
+			if masked[i].Token != "" {
+				masked[i].Token = "***"
+			}
+		}
+		return masked
+	}
 	if s, ok := v.(string); ok && secretFields[field] && s != "" {
 		return "***"
 	}
@@ -201,6 +212,8 @@ func diffGlobals(cur *config.Config, imp *config.ExportConfig) []FieldChange {
 		imp   interface{}
 	}{
 		{"githubToken", cur.GitHubToken, imp.GitHubToken},
+		{"githubAccounts", cur.GitHubAccounts, imp.GitHubAccounts},
+		{"githubAccountConcurrency", cur.GitHubAccountConcurrency, imp.GitHubAccountConcurrency},
 		{"cocurrencyNum", cur.ConcurrencyNum, imp.ConcurrencyNum},
 		{"releaseSizeLimit", cur.ReleaseSizeLimit, imp.ReleaseSizeLimit},
 		{"releaseNumLimit", cur.ReleaseNumLimit, imp.ReleaseNumLimit},
@@ -456,6 +469,14 @@ func (a *API) applyImportLocked(doc *config.ExportConfig, req *ImportRequest) (I
 	next.Storage = keptSt
 
 	// ---- globals ----
+	if choice(req.Choices.GlobalChoices, "githubAccounts", "imported") == "imported" && !reflect.DeepEqual(next.GitHubAccounts, doc.GitHubAccounts) {
+		next.GitHubAccounts = append([]githubapi.Account(nil), doc.GitHubAccounts...)
+		result.GlobalsUpdated++
+	}
+	if choice(req.Choices.GlobalChoices, "githubAccountConcurrency", "imported") == "imported" && next.GitHubAccountConcurrency != doc.GitHubAccountConcurrency {
+		next.GitHubAccountConcurrency = doc.GitHubAccountConcurrency
+		result.GlobalsUpdated++
+	}
 	if choice(req.Choices.GlobalChoices, "githubToken", "imported") == "imported" && next.GitHubToken != doc.GitHubToken {
 		next.GitHubToken = doc.GitHubToken
 		result.GlobalsUpdated++
