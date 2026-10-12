@@ -234,6 +234,7 @@ func diffServer(cur, imp config.ServerSection) []FieldChange {
 		{"authEnabled", cur.AuthEnabled, imp.AuthEnabled},
 		{"authToken", cur.AuthToken, imp.AuthToken},
 		{"dbPath", cur.DbPath, imp.DbPath},
+		{"logRetentionMonths", cur.LogRetentionMonths, imp.LogRetentionMonths},
 	}
 	var out []FieldChange
 	for _, p := range pairs {
@@ -246,7 +247,7 @@ func diffServer(cur, imp config.ServerSection) []FieldChange {
 }
 
 // buildWarnings explains the operational consequences of the changes being
-// previewed. The server section is never hot-applied, and changing
+// previewed. Startup settings require a restart, and changing
 // authEnabled/authToken can lock the operator out of the web UI.
 func buildWarnings(serverChanges []FieldChange) []string {
 	if len(serverChanges) == 0 {
@@ -257,7 +258,12 @@ func buildWarnings(serverChanges []FieldChange) []string {
 			return []string{"server.authEnabled / server.authToken 已变更：该改动不会热生效，需重启 server；若忘记令牌，重启后可能无法访问 Web UI。"}
 		}
 	}
-	return []string{"server 段已变更：该改动不会热生效，需重启 server 后生效。"}
+	for _, c := range serverChanges {
+		if c.Field != "logRetentionMonths" {
+			return []string{"server 段已变更：监听地址、认证和数据库路径改动需重启 server 后生效；日志保留月数在下次清理时生效。"}
+		}
+	}
+	return []string{"日志保留月数已变更：下次自动清理时生效。"}
 }
 
 // ExportConfig returns the full current config as YAML, usable directly as
@@ -317,7 +323,8 @@ func (a *API) PreviewImport(c *gin.Context) {
 // the documented defaults (added/modified/globals/server -> imported, deleted ->
 // keep). Builds a complete replacement config, then publishes, persists, and
 // refreshes schedules as one serialized generation. The server section is
-// written to viper but never hot-applied.
+// written to viper; log retention takes effect on the next cleanup pass,
+// while listening, authentication and database settings require a restart.
 func (a *API) ApplyImport(c *gin.Context) {
 	var req ImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -520,7 +527,7 @@ func (a *API) applyImportLocked(doc *config.ExportConfig, req *ImportRequest) (I
 		}
 	}
 
-	// ---- server section: persist chosen fields; never hot-applied ----
+	// ---- server section: persist chosen fields ----
 	curServer := config.GetServerSection()
 	if choice(req.Choices.ServerChoices, "host", "imported") == "imported" && curServer.Host != doc.Server.Host {
 		_ = config.SetServerField("host", doc.Server.Host)
@@ -542,6 +549,10 @@ func (a *API) applyImportLocked(doc *config.ExportConfig, req *ImportRequest) (I
 		_ = config.SetServerField("dbPath", doc.Server.DbPath)
 		result.ServerUpdated++
 	}
+	if choice(req.Choices.ServerChoices, "logRetentionMonths", "imported") == "imported" && curServer.LogRetentionMonths != doc.Server.LogRetentionMonths {
+		_ = config.SetServerField("logRetentionMonths", doc.Server.LogRetentionMonths)
+		result.ServerUpdated++
+	}
 
 	// The caller publishes this fully-built replacement only after every
 	// selected section has been applied.
@@ -550,7 +561,7 @@ func (a *API) applyImportLocked(doc *config.ExportConfig, req *ImportRequest) (I
 
 // ReloadConfig re-reads config.yaml from disk, repoints the API and executor at
 // the fresh config instance, and replaces the running server's cron schedules.
-// The `server:` section is NOT hot-applied and still requires a restart.
+// Startup server settings require a restart; retention is read on each cleanup pass.
 func (a *API) ReloadConfig(c *gin.Context) {
 	a.configMu.Lock()
 	snapshot, err := a.readReloadSnapshot()

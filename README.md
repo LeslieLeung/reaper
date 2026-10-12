@@ -124,6 +124,14 @@ gitrieve server
 
 From the UI you can trigger archive jobs, view real-time logs, and edit repository/storage configuration without touching `config.yaml` by hand. Repository cron schedules are refreshed immediately after repository edits, config imports, and config reloads. The server is configured via an optional `server` section in `config.yaml` (host, port, and optional bearer-token auth).
 
+Execution logs are cleaned in the background at startup and every 24 hours.
+Set `server.logRetentionMonths` to the number of calendar months to retain
+(default: `2`; non-positive values use the default). Cleanup removes all logs
+belonging to terminal jobs whose **end time** precedes the cutoff. Active jobs,
+jobs without an end time, and jobs ending exactly at the cutoff retain their
+logs. Job history and component outcomes remain available. Restart or reload
+configuration after changing the setting; the next cleanup pass uses the new value.
+
 The Repositories page provides server-side health counts, failed/never/overdue/
 stuck filters, attention-first sorting, component detail, and safe bulk retry.
 It distinguishes the latest attempt from the latest fully successful backup.

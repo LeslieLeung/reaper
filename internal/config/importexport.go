@@ -16,12 +16,15 @@ var readConfigFile = func(v *viper.Viper) error { return v.ReadInConfig() }
 // yaml and mapstructure tags so it can be (de)serialized directly and read via
 // viper's UnmarshalKey.
 type ServerSection struct {
-	Host        string `yaml:"host" mapstructure:"host"`
-	Port        string `yaml:"port" mapstructure:"port"`
-	AuthEnabled bool   `yaml:"authEnabled" mapstructure:"authEnabled"`
-	AuthToken   string `yaml:"authToken" mapstructure:"authToken"`
-	DbPath      string `yaml:"dbPath" mapstructure:"dbPath"`
+	Host               string `yaml:"host" mapstructure:"host"`
+	Port               string `yaml:"port" mapstructure:"port"`
+	AuthEnabled        bool   `yaml:"authEnabled" mapstructure:"authEnabled"`
+	AuthToken          string `yaml:"authToken" mapstructure:"authToken"`
+	DbPath             string `yaml:"dbPath" mapstructure:"dbPath"`
+	LogRetentionMonths int    `yaml:"logRetentionMonths" mapstructure:"logRetentionMonths"`
 }
+
+const DefaultLogRetentionMonths = 2
 
 // DurationString renders a time.Duration as its Go string form ("5s") in YAML
 // and accepts either that form or integer nanoseconds on parse. This keeps
@@ -92,10 +95,20 @@ func GetServerSection() ServerSection {
 	v.SetDefault("server.authEnabled", false)
 	v.SetDefault("server.authToken", "")
 	v.SetDefault("server.dbPath", "gitrieve.db")
+	v.SetDefault("server.logRetentionMonths", DefaultLogRetentionMonths)
 
-	var cfg ServerSection
+	// UnmarshalKey may omit nested defaults when a partial server section
+	// exists in the file. Seed the target as well, so adding retention alone
+	// cannot clear the listening address or database path.
+	cfg := ServerSection{
+		Host: "0.0.0.0", Port: "8080", DbPath: "gitrieve.db",
+		LogRetentionMonths: DefaultLogRetentionMonths,
+	}
 	if err := v.UnmarshalKey("server", &cfg); err != nil {
 		panic(err)
+	}
+	if cfg.LogRetentionMonths <= 0 {
+		cfg.LogRetentionMonths = DefaultLogRetentionMonths
 	}
 	return cfg
 }
@@ -248,7 +261,7 @@ func seedExportDefaults(doc *ExportConfig, jitterPresent bool) {
 	if !jitterPresent || time.Duration(doc.GitHubScheduleJitter) < 0 {
 		doc.GitHubScheduleJitter = DurationString(30 * time.Second)
 	}
-	// The server section is never hot-applied, but an absent/partial section
+	// Startup settings require a restart, but an absent/partial section
 	// must not force empty host/port/dbPath onto the config on apply.
 	if doc.Server.Host == "" {
 		doc.Server.Host = "0.0.0.0"
@@ -258,6 +271,9 @@ func seedExportDefaults(doc *ExportConfig, jitterPresent bool) {
 	}
 	if doc.Server.DbPath == "" {
 		doc.Server.DbPath = "gitrieve.db"
+	}
+	if doc.Server.LogRetentionMonths <= 0 {
+		doc.Server.LogRetentionMonths = DefaultLogRetentionMonths
 	}
 }
 
@@ -326,7 +342,7 @@ func ValidateImport(doc *ExportConfig) []string {
 
 // SetServerField persists one `server:` field to the loaded viper instance so
 // an imported server section is written to config.yaml. The running server
-// never re-reads the server section, so this only takes effect after a restart.
+// re-reads retention on each cleanup pass; other fields require a restart.
 // Returns an error when the config was never initialized.
 func SetServerField(field string, value interface{}) error {
 	stateMu.Lock()

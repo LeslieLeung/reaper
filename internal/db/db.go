@@ -31,6 +31,12 @@ const executionIndexSchema = `
 		ON executions(status);
 `
 
+const logRetentionIndexSchema = `
+	CREATE INDEX IF NOT EXISTS idx_logs_execution_id ON logs(execution_id, id);
+	CREATE INDEX IF NOT EXISTS idx_executions_log_retention ON executions(end_time, id)
+		WHERE status IN ('completed', 'failed', 'cancelled') AND end_time IS NOT NULL;
+`
+
 type DB struct {
 	*sql.DB
 }
@@ -86,7 +92,7 @@ func Initialize(path string) (*DB, error) {
 			message TEXT NOT NULL,
 			FOREIGN KEY (execution_id) REFERENCES executions(id)
 		);
-	` + componentSchema)
+	` + componentSchema + logRetentionIndexSchema)
 	if err != nil {
 		return &DB{db}, err
 	}

@@ -70,6 +70,44 @@ func TestExportConfigYAML(t *testing.T) {
 	require.Contains(t, yamlStr, "host: 127.0.0.1")
 }
 
+func TestImportLogRetentionPreviewsAndPersistsChosenValue(t *testing.T) {
+	loadTempConfig(t, "server:\n  logRetentionMonths: 2\n")
+	d, err := db.Initialize(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, d.Close()) })
+	s := server.NewConfigTestServer(config.GetIns(), d)
+	importYAML := "repository:\n  - name: test\n    url: github.com/test/repo\nserver:\n  logRetentionMonths: 6\n"
+	payload, err := json.Marshal(map[string]interface{}{"config": importYAML})
+	require.NoError(t, err)
+	code, resp := getJSON(t, s, http.MethodPost, "/api/config/import/preview", string(payload))
+	require.Equal(t, 200, code)
+	data := resp["data"].(map[string]interface{})
+	changes := data["server"].([]interface{})
+	require.Len(t, changes, 1)
+	require.Equal(t, "logRetentionMonths", changes[0].(map[string]interface{})["field"])
+	for _, selection := range []string{"existing", "imported"} {
+		payload, err = json.Marshal(map[string]interface{}{
+			"config":  importYAML,
+			"choices": map[string]interface{}{"server_choices": map[string]string{"logRetentionMonths": selection}},
+		})
+		require.NoError(t, err)
+		code, _ = getJSON(t, s, http.MethodPost, "/api/config/import", string(payload))
+		require.Equal(t, 200, code)
+		want := 2
+		if selection == "imported" {
+			want = 6
+		}
+		require.Equal(t, want, config.GetServerSection().LogRetentionMonths)
+		require.NoError(t, config.Reload())
+		require.Equal(t, want, config.GetServerSection().LogRetentionMonths)
+	}
+	// A file edit plus the reload endpoint also changes the setting the worker reads.
+	writeFile(t, config.Path, "repository:\n  - name: test\n    url: github.com/test/repo\nserver:\n  logRetentionMonths: 3\n")
+	code, _ = getJSON(t, s, http.MethodPost, "/api/config/reload", "")
+	require.Equal(t, 200, code)
+	require.Equal(t, 3, config.GetServerSection().LogRetentionMonths)
+}
+
 func TestPreviewImportValidationErrors(t *testing.T) {
 	loadTempConfig(t, "")
 	testDB, err := db.Initialize(":memory:")

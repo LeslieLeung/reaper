@@ -268,6 +268,7 @@ retryBaseDelay: "5s"
 server:
   host: 127.0.0.1
   port: "8081"
+  logRetentionMonths: 6
 `)
 	require.NoError(t, err)
 	require.Len(t, doc.Repository, 2)
@@ -283,6 +284,7 @@ server:
 	require.Equal(t, DurationString(DefaultSyncStuckThreshold), doc.SyncStuckThreshold)
 	require.Equal(t, "127.0.0.1", doc.Server.Host)
 	require.Equal(t, "8081", doc.Server.Port)
+	require.Equal(t, 6, doc.Server.LogRetentionMonths)
 }
 
 func TestParseImportSeedsDefaults(t *testing.T) {
@@ -304,6 +306,7 @@ func TestParseImportSeedsDefaults(t *testing.T) {
 	require.Equal(t, "8080", doc.Server.Port)
 	require.Equal(t, "gitrieve.db", doc.Server.DbPath)
 	require.False(t, doc.Server.AuthEnabled)
+	require.Equal(t, 2, doc.Server.LogRetentionMonths)
 }
 
 func TestParseImportPreservesExplicitZeroScheduleJitter(t *testing.T) {
