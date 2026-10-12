@@ -211,7 +211,10 @@ func TestDoBoundsFallbackAndReturnsOriginalError(t *testing.T) {
 				}
 				return Observation{}, restAccountError(404)
 			})
-			require.Same(t, firstErr, err)
+			require.ErrorIs(t, err, firstErr)
+			if _, primary := firstErr.(*github.RateLimitError); !primary && firstErr.Error() != "API rate limit exceeded" {
+				require.Same(t, firstErr, err)
+			}
 			require.Equal(t, []string{"a", "b"}, attempts)
 		})
 	}

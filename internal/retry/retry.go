@@ -27,6 +27,13 @@ const maxBackoff = 2 * time.Minute
 // reset/retry time, how long to wait. A returned wait <= 0 means "use
 // exponential backoff".
 func classify(err error) (retryable bool, wait time.Duration) {
+	// Pool exhaustion may preserve a permission diagnostic while carrying quota
+	// evidence from another credential. Prefer its earliest reset.
+	var deadline interface{ RetryAt() time.Time }
+	if errors.As(err, &deadline) {
+		return true, time.Until(deadline.RetryAt())
+	}
+
 	// REST primary rate limit (403 with rate-limit headers).
 	var rateLimitErr *github.RateLimitError
 	if errors.As(err, &rateLimitErr) {

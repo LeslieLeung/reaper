@@ -14,7 +14,8 @@ import (
 )
 
 type Client struct {
-	c *github.Client
+	c        *github.Client
+	accounts []githubapi.Account
 }
 
 func New() (*Client, error) {
@@ -23,10 +24,7 @@ func New() (*Client, error) {
 
 func NewWithContext(ctx context.Context) (*Client, error) {
 	c := github.NewClient(nil)
-	if token := config.GetExecutionConfig(ctx).GitHubToken; token != "" {
-		c = c.WithAuthToken(token)
-	}
-	return &Client{c: c}, nil
+	return &Client{c: c, accounts: config.GetGitHubAccountsContext(ctx)}, nil
 }
 
 func (c *Client) GetRepos(name string, accountType string) ([]string, error) {
@@ -39,19 +37,17 @@ func (c *Client) GetReposContext(ctx context.Context, name string, accountType s
 		err  error
 	)
 	err = retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-		permit, acquireErr := githubapi.Acquire(ctx, "core")
-		if acquireErr != nil {
-			return acquireErr
-		}
-		var response *github.Response
-		var apiErr error
-		if accountType == typedef.TypeOrg {
-			list, response, apiErr = c.c.Repositories.ListByOrg(ctx, name, nil)
-		} else {
-			list, response, apiErr = c.c.Repositories.List(ctx, name, nil)
-		}
-		permit.Done(githubapi.ObserveREST(response, apiErr))
-		return apiErr
+		return githubapi.Do(ctx, "core", c.accounts, func(token string) (githubapi.Observation, error) {
+			client := githubapi.NewREST(c.c, token)
+			var response *github.Response
+			var apiErr error
+			if accountType == typedef.TypeOrg {
+				list, response, apiErr = client.Repositories.ListByOrg(ctx, name, nil)
+			} else {
+				list, response, apiErr = client.Repositories.List(ctx, name, nil)
+			}
+			return githubapi.ObserveREST(response, apiErr), apiErr
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -74,15 +70,13 @@ func (c *Client) GetReleases(ctx context.Context, owner, repo string) ([]*github
 		err  error
 	)
 	err = retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-		permit, acquireErr := githubapi.Acquire(ctx, "core")
-		if acquireErr != nil {
-			return acquireErr
-		}
-		var apiErr error
-		var resp *github.Response
-		list, resp, apiErr = c.c.Repositories.ListReleases(ctx, owner, repo, nil)
-		permit.Done(githubapi.ObserveREST(resp, apiErr))
-		return apiErr
+		return githubapi.Do(ctx, "core", c.accounts, func(token string) (githubapi.Observation, error) {
+			client := githubapi.NewREST(c.c, token)
+			var apiErr error
+			var resp *github.Response
+			list, resp, apiErr = client.Repositories.ListReleases(ctx, owner, repo, nil)
+			return githubapi.ObserveREST(resp, apiErr), apiErr
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -96,15 +90,13 @@ func (c *Client) GetReleaseAssets(ctx context.Context, owner, repo string, id in
 		err  error
 	)
 	err = retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-		permit, acquireErr := githubapi.Acquire(ctx, "core")
-		if acquireErr != nil {
-			return acquireErr
-		}
-		var apiErr error
-		var resp *github.Response
-		list, resp, apiErr = c.c.Repositories.ListReleaseAssets(ctx, owner, repo, id, nil)
-		permit.Done(githubapi.ObserveREST(resp, apiErr))
-		return apiErr
+		return githubapi.Do(ctx, "core", c.accounts, func(token string) (githubapi.Observation, error) {
+			client := githubapi.NewREST(c.c, token)
+			var apiErr error
+			var resp *github.Response
+			list, resp, apiErr = client.Repositories.ListReleaseAssets(ctx, owner, repo, id, nil)
+			return githubapi.ObserveREST(resp, apiErr), apiErr
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -115,14 +107,33 @@ func (c *Client) GetReleaseAssets(ctx context.Context, owner, repo string, id in
 func (c *Client) DownloadAsset(ctx context.Context, owner, repo string, id int64) (io.ReadCloser, error) {
 	var rc io.ReadCloser
 	err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-		permit, acquireErr := githubapi.Acquire(ctx, "core")
-		if acquireErr != nil {
-			return acquireErr
+		var redirectURL string
+		err := githubapi.Do(ctx, "core", c.accounts, func(token string) (githubapi.Observation, error) {
+			client := githubapi.NewREST(c.c, token)
+			var apiErr error
+			rc, redirectURL, apiErr = client.Repositories.DownloadReleaseAsset(ctx, owner, repo, id, nil)
+			return githubapi.ObserveError(apiErr), apiErr
+		})
+		if err != nil || redirectURL == "" {
+			return err
 		}
-		var apiErr error
-		rc, _, apiErr = c.c.Repositories.DownloadReleaseAsset(ctx, owner, repo, id, http.DefaultClient)
-		permit.Done(githubapi.ObserveError(apiErr))
-		return apiErr
+		// API authorization has completed. The asset body transfer does not
+		// occupy an account/global API permit or forward the GitHub credential.
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, redirectURL, nil)
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Accept", "*/*")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return err
+		}
+		if err := github.CheckResponse(response); err != nil {
+			response.Body.Close()
+			return err
+		}
+		rc = response.Body
+		return nil
 	})
 	if err != nil {
 		return nil, err

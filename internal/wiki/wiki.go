@@ -45,20 +45,18 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 		return err
 	}
 
-	cfg := config.GetExecutionConfig(ctx)
-	client := gh.NewClient(nil).WithAuthToken(cfg.GitHubToken)
+	accounts := config.GetGitHubAccountsContext(ctx)
+	baseClient := gh.NewClient(nil)
 
 	var gitrepo *gh.Repository
 	err = retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-		permit, acquireErr := githubapi.Acquire(ctx, "core")
-		if acquireErr != nil {
-			return acquireErr
-		}
-		var response *gh.Response
-		var apiErr error
-		gitrepo, response, apiErr = client.Repositories.Get(ctx, r.Owner, r.Name)
-		permit.Done(githubapi.ObserveREST(response, apiErr))
-		return apiErr
+		return githubapi.Do(ctx, "core", accounts, func(token string) (githubapi.Observation, error) {
+			client := githubapi.NewREST(baseClient, token)
+			var response *gh.Response
+			var apiErr error
+			gitrepo, response, apiErr = client.Repositories.Get(ctx, r.Owner, r.Name)
+			return githubapi.ObserveREST(response, apiErr), apiErr
+		})
 	})
 	if err != nil {
 		ui.Errorf("Get repository %s fail", repo.URL)

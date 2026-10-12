@@ -50,7 +50,8 @@ func AcquireAccount(ctx context.Context, resource string, accounts []Account, ex
 // Do wraps one network attempt, with bounded credential fallback for primary
 // exhaustion, invalid authentication, and permission errors. Each unique token
 // is tried at most once. Secondary and transient errors return to the caller's
-// existing retry policy. Exhaustion returns the first request error.
+// existing retry policy. Exhaustion retains the first diagnostic and identity,
+// exposing the earliest primary reset when any credential exhausted its quota.
 func Do(ctx context.Context, resource string, accounts []Account, fn func(string) (Observation, error)) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -59,28 +60,49 @@ func Do(ctx context.Context, resource string, accounts []Account, fn func(string
 	accounts = uniqueAccounts(accounts)
 	excluded := make(map[string]bool, len(accounts))
 	var firstErr error
+	var earliestReset time.Time
+	exhausted := func() error {
+		if !earliestReset.IsZero() {
+			return &poolRetryError{original: firstErr, at: earliestReset}
+		}
+		return firstErr
+	}
 	for attempt := 0; attempt < len(accounts); attempt++ {
 		p, err := c.acquireAccount(ctx, resource, accounts, excluded)
 		if err != nil {
 			if errors.Is(err, ErrNoAccountsAvailable) && firstErr != nil {
-				return firstErr
+				return exhausted()
 			}
 			return err
 		}
-		failure, err := attemptAccount(ctx, p.(*permit), fn)
+		failure, obs, err := attemptAccount(ctx, p.(*permit), fn)
 		if err == nil {
 			return nil
 		}
 		if firstErr == nil {
 			firstErr = err
 		}
+		if failure == primaryExhaustion && (earliestReset.IsZero() || obs.Reset.Before(earliestReset)) {
+			earliestReset = obs.Reset
+		}
 		if failure == noFallback {
 			return err
 		}
 		excluded[p.Token()] = true
 	}
-	return firstErr
+	return exhausted()
 }
+
+// poolRetryError keeps the first diagnostic and identity while supplying the
+// earliest primary reset seen across exhausted credentials to the outer retry.
+type poolRetryError struct {
+	original error
+	at       time.Time
+}
+
+func (e *poolRetryError) Error() string      { return e.original.Error() }
+func (e *poolRetryError) Unwrap() error      { return e.original }
+func (e *poolRetryError) RetryAt() time.Time { return e.at }
 
 type accountFailure uint8
 
@@ -91,25 +113,25 @@ const (
 	primaryExhaustion
 )
 
-func attemptAccount(ctx context.Context, p *permit, fn func(string) (Observation, error)) (accountFailure, error) {
+func attemptAccount(ctx context.Context, p *permit, fn func(string) (Observation, error)) (accountFailure, Observation, error) {
 	var obs Observation
 	// A callback panic must not permanently occupy a process/account slot.
 	defer func() { p.Done(obs) }()
 	if err := ctx.Err(); err != nil {
-		return noFallback, err
+		return noFallback, obs, err
 	}
 	var err error
 	obs, err = fn(p.Token())
 	failure, observed := classifyAccountError(err, p.resource, obs)
 	obs = observed
 	err = normalizeRESTRateError(err, failure, obs)
-	if failure == invalidCredential {
+	if failure == invalidCredential && p.Token() != "" {
 		p.c.mu.Lock()
 		p.credential.disabled = true
 		p.c.signalLocked()
 		p.c.mu.Unlock()
 	}
-	return failure, err
+	return failure, obs, err
 }
 
 func classifyAccountError(err error, resource string, obs Observation) (accountFailure, Observation) {

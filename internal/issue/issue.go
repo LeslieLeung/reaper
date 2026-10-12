@@ -145,22 +145,20 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 	// syncs use the same instant in UTC without reinterpreting wall-clock time.
 	opt := newIssueListOptions(lastUpdate)
 
-	cfg := config.GetExecutionConfig(ctx)
-	client := gh.NewClient(nil).WithAuthToken(cfg.GitHubToken)
+	accounts := config.GetGitHubAccountsContext(ctx)
+	baseClient := gh.NewClient(nil)
 	for {
 		var (
 			issues []*gh.Issue
 			resp   *gh.Response
 		)
 		err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-			permit, acquireErr := githubapi.Acquire(ctx, "core")
-			if acquireErr != nil {
-				return acquireErr
-			}
-			var apiErr error
-			issues, resp, apiErr = client.Issues.ListByRepo(ctx, r.Owner, r.Name, opt)
-			permit.Done(githubapi.ObserveREST(resp, apiErr))
-			return apiErr
+			return githubapi.Do(ctx, "core", accounts, func(token string) (githubapi.Observation, error) {
+				client := githubapi.NewREST(baseClient, token)
+				var apiErr error
+				issues, resp, apiErr = client.Issues.ListByRepo(ctx, r.Owner, r.Name, opt)
+				return githubapi.ObserveREST(resp, apiErr), apiErr
+			})
 		})
 		if err != nil {
 			ui.Errorf("Error fetching issues, %s", err)
@@ -185,14 +183,12 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 					resp     *gh.Response
 				)
 				err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-					permit, acquireErr := githubapi.Acquire(ctx, "core")
-					if acquireErr != nil {
-						return acquireErr
-					}
-					var apiErr error
-					comments, resp, apiErr = client.Issues.ListComments(ctx, r.Owner, r.Name, issue.GetNumber(), commentsOpt)
-					permit.Done(githubapi.ObserveREST(resp, apiErr))
-					return apiErr
+					return githubapi.Do(ctx, "core", accounts, func(token string) (githubapi.Observation, error) {
+						client := githubapi.NewREST(baseClient, token)
+						var apiErr error
+						comments, resp, apiErr = client.Issues.ListComments(ctx, r.Owner, r.Name, issue.GetNumber(), commentsOpt)
+						return githubapi.ObserveREST(resp, apiErr), apiErr
+					})
 				})
 				if err != nil {
 					ui.Errorf("Error fetching comments of issue %d, %s", issue.GetNumber(), err)
