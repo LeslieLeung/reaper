@@ -45,7 +45,7 @@
 
 ### Task 3: Synchronization integrations and final validation
 
-**Files:** `internal/issue/issue.go`, `internal/discussion/discussion.go`, `internal/scm/github/github.go`, `internal/wiki/wiki.go`, tests in those packages and any narrowly needed test utilities.
+**Files:** `internal/issue/issue.go`, `internal/discussion/discussion.go`, `internal/scm/github/github.go`, `internal/wiki/wiki.go`, `internal/githubapi/accounts.go`, `internal/githubapi/accounts_test.go`, tests in those packages and any narrowly needed common client helpers/test utilities.
 
 **Interfaces:** Consume `githubapi.Do` and `config.GetGitHubAccountsContext`. Wrap each existing retry callback in `Do`; callbacks return `(Observation, error)` and authenticate using the chosen token. Build a fresh REST client over a copied HTTP client before `WithAuthToken`, avoiding empty-token auth; preserve BaseURL and existing test seams. The pinned go-github/v56 WithAuthToken mutates shared HTTP transport, so it must not wrap a shared client directly. A small helper shared by consumers may live in internal/githubapi.
 
@@ -64,6 +64,8 @@ err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
 ```
 
 - [ ] Write local HTTP tests that fail while only the old token is used: two requests rotate credentials, an exhausted first credential falls back promptly, permission failures try eligible alternatives, cancellation emits no request. Include real Issue/comment and GraphQL query consumers with captured authorization/pagination.
+- [ ] Preserve anonymous REST after an unauthenticated GraphQL 401: add a failing regression that a later anonymous REST Do and legacy Acquire remain usable, then only persist invalid-credential disablement when the permit token is nonempty. Nonempty invalid credentials must remain disabled.
+- [ ] Add failing pool-exhaustion tests: A primary reset in an hour and B in ten seconds expose the ten-second retry deadline; A permission403 and B primary exhausted remain retryable and later succeed; all-permission errors retain the exact first error. Keep distinct-token attempts bounded. Preserve first error diagnostics and errors.Is identity using the existing normalized error pattern, while exposing earliest primary retry evidence. Verify actual outer retry timing with short reset fixtures; GraphQL primary cooldown must stay associated with its resource.
 - [ ] Run focused tests and confirm failure before wiring each consumer.
 - [ ] Convert every covered API attempt, preserving response-derived pagination and GraphQL rateLimit reporting. Ensure failed GraphQL attempts cannot leave partially decoded query state that leaks into the next credential attempt.
 - [ ] Run `go test ./...`, race tests for the arbiter/config/clients if supported, and `node --test web/main.test.cjs web/tests/*.test.js` with shell-expanded file paths. Review diff for credential leakage, permit leaks, and missed single-token call sites.
