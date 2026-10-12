@@ -25,11 +25,11 @@
 
 **Interfaces:** Produce `type Account struct { Name string; Token string }` with yaml/mapstructure/json tags; add `Config.AccountConcurrency uint`. Produce `type AccountPermit interface { Permit; Token() string }`, `AcquireAccount(ctx context.Context, resource string, accounts []Account, excluded map[string]bool) (AccountPermit, error)` and `Do(ctx context.Context, resource string, accounts []Account, fn func(string) (Observation, error)) error`. Preserve existing `Acquire`, `Configure`, `Publish`, scope and publication interfaces.
 
-- [ ] Write failing tests with literal credentials `a`, `b`: exhaust `a` core quota for an hour and verify `b` is admitted immediately; hold one slot per account and verify a third acquisition cancels at its deadline.
-- [ ] Run `go test ./internal/githubapi` and observe missing feature failures.
-- [ ] Implement fair selection, global/account caps, per-token resource/pacing state, cancellation and idempotent permits. Keep the stable arbiter pointer. Deduplicate identical token strings and distinguish anonymous/legacy from named pool caps.
-- [ ] Test `Do` against typed REST 401, permission 403/404, primary quota errors and secondary errors; verify bounded candidate attempts, selected-token callback results and cooldown isolation. Handle known GraphQL error forms with bounded fallback and conservative cooldown when exact reset data is absent.
-- [ ] Verify focused tests and existing coordinator tests. Commit only Task 1 files and write the implementation report.
+- [x] Write failing tests with literal credentials `a`, `b`: exhaust `a` core quota for an hour and verify `b` is admitted immediately; hold one slot per account and verify a third acquisition cancels at its deadline.
+- [x] Run `go test ./internal/githubapi` and observe missing feature failures.
+- [x] Implement fair selection, global/account caps, per-token resource/pacing state, cancellation and idempotent permits. Keep the stable arbiter pointer. Deduplicate identical token strings and distinguish anonymous/legacy from named pool caps.
+- [x] Test `Do` against typed REST 401, permission 403/404, primary quota errors and secondary errors; verify bounded candidate attempts, selected-token callback results and cooldown isolation. Handle known GraphQL error forms with bounded fallback and conservative cooldown when exact reset data is absent.
+- [x] Verify focused tests and existing coordinator tests. Commit only Task 1 files and write the implementation report.
 
 ### Task 2: Configuration lifecycle and documentation
 
@@ -37,11 +37,11 @@
 
 **Interfaces:** Consume `githubapi.Account` and `Config.AccountConcurrency`. Add `Config.GitHubAccounts []githubapi.Account`, `Config.GitHubAccountConcurrency uint` and `GetGitHubAccountsContext(ctx context.Context) []githubapi.Account`. The getter returns a detached normalized pool, uses only the pool when nonempty, otherwise returns the legacy token with an empty name, or an empty slice for anonymous mode.
 
-- [ ] Add failing tests: parse/export/save/reload a two-account YAML document; clone/execution snapshot mutation must not modify published account slices; blank names/tokens and duplicate names fail validation without revealing tokens.
-- [ ] Run `go test ./internal/config ./internal/server` and confirm failures before implementation.
-- [ ] Extend config defaults, cloning, policy conversion and save. Extend ExportConfig, import parsing/defaults/validation, diffGlobals and chosen apply globals. Treat githubAccounts as a secret-containing list and mask each token independently in preview.
-- [ ] Verify import choices `existing`/`imported` for both new fields and legacy documents. Add documentation showing two different users, `githubApiConcurrency: 4`, `githubAccountConcurrency: 2`, `cocurrencyNum: 12`, and explain per-credential pacing, global caps, private repository access and pool precedence.
-- [ ] Run focused tests, commit only Task 2 files and write the report.
+- [x] Add failing tests: parse/export/save/reload a two-account YAML document; clone/execution snapshot mutation must not modify published account slices; blank names/tokens and duplicate names fail validation without revealing tokens.
+- [x] Run `go test ./internal/config ./internal/server` and confirm failures before implementation.
+- [x] Extend config defaults, cloning, policy conversion and save. Extend ExportConfig, import parsing/defaults/validation, diffGlobals and chosen apply globals. Treat githubAccounts as a secret-containing list and mask each token independently in preview.
+- [x] Verify import choices `existing`/`imported` for both new fields and legacy documents. Add documentation showing two different users, `githubApiConcurrency: 4`, `githubAccountConcurrency: 2`, `cocurrencyNum: 12`, and explain per-credential pacing, global caps, private repository access and pool precedence.
+- [x] Run focused tests, commit only Task 2 files and write the report.
 
 ### Task 3: Synchronization integrations and final validation
 
@@ -63,10 +63,22 @@ err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
 })
 ```
 
-- [ ] Write local HTTP tests that fail while only the old token is used: two requests rotate credentials, an exhausted first credential falls back promptly, permission failures try eligible alternatives, cancellation emits no request. Include real Issue/comment and GraphQL query consumers with captured authorization/pagination.
-- [ ] Preserve anonymous REST after an unauthenticated GraphQL 401: add a failing regression that a later anonymous REST Do and legacy Acquire remain usable, then only persist invalid-credential disablement when the permit token is nonempty. Nonempty invalid credentials must remain disabled.
-- [ ] Add failing pool-exhaustion tests: A primary reset in an hour and B in ten seconds expose the ten-second retry deadline; A permission403 and B primary exhausted remain retryable and later succeed; all-permission errors retain the exact first error. Keep distinct-token attempts bounded. Preserve first error diagnostics and errors.Is identity with a narrow wrapper exposing `RetryAt() time.Time`; retry.classify honors that optional interface before individual-error classification, avoiding fabricated GitHub HTTP responses for GraphQL failures. Verify actual outer retry timing with short reset fixtures; GraphQL primary cooldown must stay associated with its resource.
-- [ ] Run focused tests and confirm failure before wiring each consumer.
-- [ ] Convert every covered API attempt, preserving response-derived pagination and GraphQL rateLimit reporting. Ensure failed GraphQL attempts cannot leave partially decoded query state that leaks into the next credential attempt.
-- [ ] Run `go test ./...`, race tests for the arbiter/config/clients if supported, and `node --test web/main.test.cjs web/tests/*.test.js` with shell-expanded file paths. Review diff for credential leakage, permit leaks, and missed single-token call sites.
-- [ ] Commit only Task 3 files and write the report. Complete independent whole-branch review and address findings before delivery.
+- [x] Write local HTTP tests that fail while only the old token is used: two requests rotate credentials, an exhausted first credential falls back promptly, permission failures try eligible alternatives, cancellation emits no request. Include real Issue/comment and GraphQL query consumers with captured authorization/pagination.
+- [x] Preserve anonymous REST after an unauthenticated GraphQL 401: add a failing regression that a later anonymous REST Do and legacy Acquire remain usable, then only persist invalid-credential disablement when the permit token is nonempty. Nonempty invalid credentials must remain disabled.
+- [x] Add failing pool-exhaustion tests: A primary reset in an hour and B in ten seconds expose the ten-second retry deadline; A permission403 and B primary exhausted remain retryable and later succeed; all-permission errors retain the exact first error. Keep distinct-token attempts bounded. Preserve first error diagnostics and errors.Is identity with a narrow wrapper exposing `RetryAt() time.Time`; retry.classify honors that optional interface before individual-error classification, avoiding fabricated GitHub HTTP responses for GraphQL failures. Verify actual outer retry timing with short reset fixtures; GraphQL primary cooldown must stay associated with its resource.
+- [x] Run focused tests and confirm failure before wiring each consumer.
+- [x] Convert every covered API attempt, preserving response-derived pagination and GraphQL rateLimit reporting. Ensure failed GraphQL attempts cannot leave partially decoded query state that leaks into the next credential attempt.
+- [x] Run `go test ./...`, race tests for the arbiter/config/clients if supported, and `node --test web/main.test.cjs web/tests/*.test.js` with shell-expanded file paths. Review diff for credential leakage, permit leaks, and missed single-token call sites.
+- [x] Commit only Task 3 files and write the report. Complete independent whole-branch review and address findings before delivery.
+
+## Completion evidence
+
+Implemented through `740719f`. Task reviews passed; the final whole-branch review found a shared-cooldown fallback delay, fixed with red/green regressions and a clean scoped re-review.
+
+- Final `CGO_ENABLED=0 go test ./...` passed after the recovery fix.
+- Existing web tests passed: 8 passed, 0 failed. Web files were unchanged by the recovery fix.
+- Local HTTP integrations cover selected credentials, fallback, pagination, partial GraphQL results and asset permit release.
+- Race tests could not run because this environment has CGO disabled and no gcc.
+- The current worktree and branch retain all commits for review.
+
+Implementation decisions: wiki availability metadata also uses the pool (one extra integration/test); each REST attempt creates a fresh client over a copied HTTP client to avoid mixed credentials (small allocation cost); recoverable quota exhaustion uses the earliest reset while preserving the first diagnostic and errors.Is through a wrapper (mixed/rate errors do not preserve exact pointer identity).
