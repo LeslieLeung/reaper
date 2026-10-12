@@ -102,6 +102,7 @@ func attemptAccount(ctx context.Context, p *permit, fn func(string) (Observation
 	obs, err = fn(p.Token())
 	failure, observed := classifyAccountError(err, p.resource, obs)
 	obs = observed
+	err = normalizeRESTRateError(err, failure, obs)
 	if failure == invalidCredential {
 		p.c.mu.Lock()
 		p.credential.disabled = true
@@ -112,7 +113,7 @@ func attemptAccount(ctx context.Context, p *permit, fn func(string) (Observation
 }
 
 func classifyAccountError(err error, resource string, obs Observation) (accountFailure, Observation) {
-	if err == nil || obs.Secondary {
+	if err == nil {
 		return noFallback, obs
 	}
 	var abuse *github.AbuseRateLimitError
@@ -125,13 +126,16 @@ func classifyAccountError(err error, resource string, obs Observation) (accountF
 	}
 	var limited *github.RateLimitError
 	if errors.As(err, &limited) {
+		if obs.Secondary || secondaryMessage(limited.Message) {
+			return noFallback, secondaryRESTObservation(limited.Response, obs)
+		}
 		if obs.Reset.IsZero() {
 			obs.Reset = limited.Rate.Reset.Time
 		}
 		return primaryObservation(resource, obs)
 	}
-	// REST status errors take precedence over textual matching. A permission
-	// response mentioning quota must not cause a credential quota pause.
+	// v56 recognizes rate errors only for selected 403 forms. Use explicit
+	// secondary evidence and primary quota headers for both 403 and 429.
 	var response *github.ErrorResponse
 	if errors.As(err, &response) {
 		if response.Response == nil {
@@ -140,12 +144,35 @@ func classifyAccountError(err error, resource string, obs Observation) (accountF
 		switch response.Response.StatusCode {
 		case http.StatusUnauthorized:
 			return invalidCredential, obs
-		case http.StatusForbidden, http.StatusNotFound:
+		case http.StatusForbidden, http.StatusTooManyRequests:
+			headers := response.Response.Header
+			if obs.Secondary || secondaryMessage(response.Message) || (headers.Get("Retry-After") != "" && headers.Get("X-RateLimit-Remaining") != "0") {
+				return noFallback, secondaryRESTObservation(response.Response, obs)
+			}
+			if headers.Get("X-RateLimit-Remaining") == "0" || (obs.Limit > 0 && obs.Remaining == 0 && !obs.Reset.IsZero()) {
+				if obs.Resource == "" {
+					obs.Resource = headers.Get("X-RateLimit-Resource")
+				}
+				if obs.Reset.IsZero() {
+					if seconds, parseErr := strconv.ParseInt(headers.Get("X-RateLimit-Reset"), 10, 64); parseErr == nil {
+						obs.Reset = time.Unix(seconds, 0)
+					}
+				}
+				if obs.Limit == 0 {
+					obs.Limit, _ = strconv.Atoi(headers.Get("X-RateLimit-Limit"))
+				}
+				return primaryObservation(resource, obs)
+			}
+			if response.Response.StatusCode == http.StatusTooManyRequests {
+				return noFallback, secondaryRESTObservation(response.Response, obs)
+			}
 			return permissionFailure, obs
-		case http.StatusTooManyRequests:
-			obs.Secondary = true
-			obs.RetryAfter = retryAfter(response.Response.Header.Get("Retry-After"))
+		case http.StatusNotFound:
+			return permissionFailure, obs
 		}
+		return noFallback, obs
+	}
+	if obs.Secondary {
 		return noFallback, obs
 	}
 	// githubv4 exposes either the first GraphQL error message or a formatted
@@ -169,6 +196,65 @@ func classifyAccountError(err error, resource string, obs Observation) (accountF
 	default:
 		return noFallback, obs
 	}
+}
+
+func secondaryMessage(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "secondary rate limit") || strings.Contains(message, "abuse detection")
+}
+
+func secondaryRESTObservation(response *http.Response, obs Observation) Observation {
+	obs.Secondary = true
+	if response != nil && response.Header.Get("Retry-After") != "" {
+		obs.RetryAfter = retryAfter(response.Header.Get("Retry-After"))
+	} else if obs.RetryAfter <= 0 {
+		obs.RetryAfter = time.Minute
+	}
+	return obs
+}
+
+// normalizedRateError preserves the original diagnostic/identity while exposing
+// only the corrected rate kind to retry.classify. In particular, unwrap must
+// not reveal a misclassified primary error underneath a secondary error.
+type normalizedRateError struct{ original, rate error }
+
+func (e *normalizedRateError) Error() string        { return e.original.Error() }
+func (e *normalizedRateError) Unwrap() error        { return e.rate }
+func (e *normalizedRateError) Is(target error) bool { return errors.Is(e.original, target) }
+func (e *normalizedRateError) As(target any) bool {
+	switch target.(type) {
+	case **github.RateLimitError, **github.AbuseRateLimitError:
+		return errors.As(e.rate, target)
+	default:
+		return errors.As(e.original, target)
+	}
+}
+
+func normalizeRESTRateError(err error, failure accountFailure, obs Observation) error {
+	if err == nil {
+		return nil
+	}
+	var response *http.Response
+	var message string
+	var limited *github.RateLimitError
+	var generic *github.ErrorResponse
+	if errors.As(err, &limited) {
+		if !obs.Secondary {
+			return err
+		}
+		response, message = limited.Response, limited.Message
+	} else if errors.As(err, &generic) && generic.Response != nil && (generic.Response.StatusCode == 403 || generic.Response.StatusCode == 429) {
+		response, message = generic.Response, generic.Message
+	} else {
+		return err
+	}
+	if obs.Secondary {
+		return &normalizedRateError{original: err, rate: &github.AbuseRateLimitError{Response: response, Message: message, RetryAfter: &obs.RetryAfter}}
+	}
+	if failure == primaryExhaustion {
+		return &normalizedRateError{original: err, rate: &github.RateLimitError{Response: response, Message: message, Rate: github.Rate{Limit: obs.Limit, Remaining: 0, Reset: github.Timestamp{Time: obs.Reset}}}}
+	}
+	return err
 }
 
 func primaryObservation(resource string, obs Observation) (accountFailure, Observation) {

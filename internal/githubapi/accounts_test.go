@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/go-github/v56/github"
 	"github.com/stretchr/testify/require"
+	"github.com/wnarutou/gitrieve/internal/retry"
 )
 
 var poolAccounts = []Account{{Name: "first", Token: "a"}, {Name: "second", Token: "b"}}
@@ -314,4 +317,112 @@ func TestNamedTokenCapAppliesToOldLegacySnapshots(t *testing.T) {
 	first.Done(Observation{})
 	acquirePool(t, "core", legacy, nil)
 	requirePoolBlocked(t, "core", poolAccounts[:1])
+}
+
+func checkedAccountResponse(t *testing.T, status int, message string, headers map[string]string) error {
+	t.Helper()
+	response := accountHTTPResponse(status)
+	response.Body = io.NopCloser(strings.NewReader(fmt.Sprintf(`{"message":%q}`, message)))
+	for name, value := range headers {
+		response.Header.Set(name, value)
+	}
+	err := github.CheckResponse(response)
+	require.Error(t, err)
+	return err
+}
+
+// These real CheckResponse fixtures catch depending on v56's incomplete status
+// and documentation-URL heuristic instead of GitHub's explicit rate evidence.
+func TestDoRecognizesRESTSecondaryAcross403And429(t *testing.T) {
+	for _, status := range []int{403, 429} {
+		for _, remaining := range []string{"7", "0"} {
+			t.Run(fmt.Sprintf("status=%d/remaining=%s", status, remaining), func(t *testing.T) {
+				installCoordinatorForTest(t, Config{Concurrency: 2})
+				original := checkedAccountResponse(t, status, "You have exceeded a secondary rate limit.", map[string]string{
+					"Retry-After": "120", "X-RateLimit-Remaining": remaining, "X-RateLimit-Reset": fmt.Sprint(time.Now().Add(time.Hour).Unix()),
+				})
+				var attempts []string
+				err := Do(context.Background(), "core", poolAccounts, func(token string) (Observation, error) {
+					attempts = append(attempts, token)
+					return Observation{}, original
+				})
+				require.Equal(t, []string{"a"}, attempts)
+				require.ErrorIs(t, err, original)
+				var abuse *github.AbuseRateLimitError
+				require.ErrorAs(t, err, &abuse)
+				require.NotNil(t, abuse.RetryAfter)
+				require.Equal(t, 120*time.Second, *abuse.RetryAfter)
+				var primary *github.RateLimitError
+				require.False(t, errors.As(err, &primary), "outer retry checks primary before secondary")
+				requirePoolBlocked(t, "graphql", poolAccounts[1:])
+			})
+		}
+	}
+}
+
+func TestDoPrimaryREST429FallsBackAndRetainsExactReset(t *testing.T) {
+	installCoordinatorForTest(t, Config{Concurrency: 2})
+	reset := time.Unix(time.Now().Add(time.Hour).Unix(), 0)
+	original := checkedAccountResponse(t, 429, "API rate limit exceeded", map[string]string{
+		"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(reset.Unix()), "X-RateLimit-Resource": "core", "X-RateLimit-Limit": "5000",
+	})
+	var attempts []string
+	err := Do(context.Background(), "core", poolAccounts, func(token string) (Observation, error) {
+		attempts = append(attempts, token)
+		if token == "a" {
+			return Observation{}, original
+		}
+		return Observation{}, nil
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"a", "b"}, attempts)
+	requirePoolBlocked(t, "core", poolAccounts[:1])
+	acquirePool(t, "graphql", poolAccounts[:1], nil).Done(Observation{})
+	acquirePool(t, "core", poolAccounts[1:], nil).Done(Observation{})
+
+	installCoordinatorForTest(t, Config{Concurrency: 2})
+	err = Do(context.Background(), "core", poolAccounts[:1], func(string) (Observation, error) { return Observation{}, original })
+	require.ErrorIs(t, err, original)
+	var primary *github.RateLimitError
+	require.ErrorAs(t, err, &primary)
+	require.Equal(t, reset, primary.Rate.Reset.Time)
+}
+
+func TestDoRESTSecondary403RemainsRetryableToOuterPolicy(t *testing.T) {
+	installCoordinatorForTest(t, Config{Concurrency: 2})
+	original := checkedAccountResponse(t, 403, "You have exceeded a secondary rate limit.", map[string]string{"Retry-After": "120"})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	attempts := 0
+	err := retry.Do(ctx, retry.Config{MaxRetries: 1, BaseDelay: time.Millisecond}, func() error {
+		return Do(ctx, "core", poolAccounts, func(string) (Observation, error) { attempts++; return Observation{}, original })
+	})
+	require.ErrorIs(t, err, context.DeadlineExceeded, "outer policy must wait for Retry-After, not return nonretryable403")
+	require.Equal(t, 1, attempts)
+}
+
+func TestDoRESTSecondaryUsesShortObservationRetryAfterInOuterPolicy(t *testing.T) {
+	installCoordinatorForTest(t, Config{Concurrency: 2})
+	// HTTP Retry-After is expressed in whole seconds; the observation interface
+	// can supply a short parsed cooldown without making this test wait a second.
+	original := checkedAccountResponse(t, 403, "You have exceeded a secondary rate limit.", map[string]string{
+		"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": fmt.Sprint(time.Now().Add(time.Hour).Unix()),
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	var attempts []string
+	outerAttempts := 0
+	err := retry.Do(ctx, retry.Config{MaxRetries: 1, BaseDelay: time.Millisecond}, func() error {
+		outerAttempts++
+		return Do(ctx, "core", poolAccounts, func(token string) (Observation, error) {
+			attempts = append(attempts, token)
+			if len(attempts) == 1 {
+				return Observation{RetryAfter: 20 * time.Millisecond}, original
+			}
+			return Observation{}, nil
+		})
+	})
+	require.NoError(t, err)
+	require.Equal(t, 2, outerAttempts, "secondary failures must return to the outer policy without internal rotation")
+	require.Equal(t, []string{"a", "b"}, attempts, "retry must honor secondary cooldown instead of the one-hour primary reset")
 }
