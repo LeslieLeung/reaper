@@ -68,8 +68,13 @@ func Do(ctx context.Context, resource string, accounts []Account, fn func(string
 		return firstErr
 	}
 	for attempt := 0; attempt < len(accounts); attempt++ {
-		p, err := c.acquireAccount(ctx, resource, accounts, excluded)
+		p, err := c.acquireAccountWithRecovery(ctx, resource, accounts, excluded, earliestReset, firstErr != nil)
 		if err != nil {
+			var recovery *accountRecoveryError
+			if firstErr != nil && errors.As(err, &recovery) {
+				earliestReset = recovery.at
+				return exhausted()
+			}
 			if errors.Is(err, ErrNoAccountsAvailable) && firstErr != nil {
 				return exhausted()
 			}
@@ -331,7 +336,18 @@ func uniqueAccounts(accounts []Account) []Account {
 	return result
 }
 
+// accountRecoveryError returns fallback to the outer retry without replaying an
+// excluded credential within the same Do. Its deadline includes shared quota
+// evidence, so another request's cooldown cannot hide an earlier recovery.
+type accountRecoveryError struct{ at time.Time }
+
+func (e *accountRecoveryError) Error() string { return "GitHub account pool awaiting primary reset" }
+
 func (c *coordinator) acquireAccount(ctx context.Context, resource string, accounts []Account, excluded map[string]bool) (AccountPermit, error) {
+	return c.acquireAccountWithRecovery(ctx, resource, accounts, excluded, time.Time{}, false)
+}
+
+func (c *coordinator) acquireAccountWithRecovery(ctx context.Context, resource string, accounts []Account, excluded map[string]bool, observedReset time.Time, fallback bool) (AccountPermit, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -346,11 +362,10 @@ func (c *coordinator) acquireAccount(ctx context.Context, resource string, accou
 		var selected *credentialState
 		var token string
 		var earliest time.Time
+		recovery := observedReset
+		var candidateStart time.Time
 		eligible := false
 		for _, account := range accounts {
-			if excluded[account.Token] {
-				continue
-			}
 			state := c.credentials[account.Token]
 			if state == nil {
 				state = &credentialState{resourcePause: make(map[string]time.Time)}
@@ -359,19 +374,34 @@ func (c *coordinator) acquireAccount(ctx context.Context, resource string, accou
 			if state.disabled {
 				continue
 			}
+			if fallback {
+				if reset := state.resourcePause[resource]; reset.After(now) && (recovery.IsZero() || reset.Before(recovery)) {
+					recovery = reset
+				}
+			}
+			if excluded[account.Token] {
+				continue
+			}
 			if account.Name != "" {
 				state.named = true
 			}
 			eligible = true
-			if c.active >= c.cfg.Concurrency || (state.named && state.active >= c.cfg.AccountConcurrency) {
-				continue
-			}
 			until := c.secondaryPause
 			if state.nextStart.After(until) {
 				until = state.nextStart
 			}
 			if pause := state.resourcePause[resource]; pause.After(until) {
 				until = pause
+			}
+			candidateUntil := until
+			if candidateUntil.Before(now) {
+				candidateUntil = now
+			}
+			if candidateStart.IsZero() || candidateUntil.Before(candidateStart) {
+				candidateStart = candidateUntil
+			}
+			if c.active >= c.cfg.Concurrency || (state.named && state.active >= c.cfg.AccountConcurrency) {
+				continue
 			}
 			if until.After(now) {
 				if earliest.IsZero() || until.Before(earliest) {
@@ -391,6 +421,18 @@ func (c *coordinator) acquireAccount(ctx context.Context, resource string, accou
 			selected.lastSelected = c.selection
 			c.mu.Unlock()
 			return &permit{c: c, credential: selected, token: token, resource: resource}, nil
+		}
+		if fallback && !recovery.IsZero() {
+			// A paused candidate cannot become useful before recovery; return
+			// now so retry can sleep to that reset. Busy but otherwise usable
+			// candidates still wait for release, bounded by the same reset.
+			if !eligible || !recovery.After(now) || !candidateStart.Before(recovery) {
+				c.mu.Unlock()
+				return nil, &accountRecoveryError{at: recovery}
+			}
+			if earliest.IsZero() || recovery.Before(earliest) {
+				earliest = recovery
+			}
 		}
 		changed := c.changed
 		c.mu.Unlock()

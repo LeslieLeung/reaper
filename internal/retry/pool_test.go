@@ -35,3 +35,11 @@ func TestClassifyPoolDeadlineBeforeIndividualError(t *testing.T) {
 		require.ErrorIs(t, err, first)
 	}
 }
+
+func TestClassifyElapsedPoolDeadlineDoesNotUseBackoff(t *testing.T) {
+	err := poolDeadlineFixture{cause: errors.New("permission denied"), reset: time.Now().Add(-time.Millisecond)}
+	retryable, wait := classify(err)
+	require.True(t, retryable)
+	require.Greater(t, wait, time.Duration(0), "elapsed exact deadline must retry immediately instead of selecting exponential backoff")
+	require.LessOrEqual(t, wait, time.Nanosecond)
+}

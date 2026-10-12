@@ -31,7 +31,8 @@ func classify(err error) (retryable bool, wait time.Duration) {
 	// evidence from another credential. Prefer its earliest reset.
 	var deadline interface{ RetryAt() time.Time }
 	if errors.As(err, &deadline) {
-		return true, time.Until(deadline.RetryAt())
+		// An elapsed exact reset means retry immediately, not exponential backoff.
+		return true, max(time.Until(deadline.RetryAt()), time.Nanosecond)
 	}
 
 	// REST primary rate limit (403 with rate-limit headers).
