@@ -40,20 +40,23 @@
 - [ ] Add failing tests: parse/export/save/reload a two-account YAML document; clone/execution snapshot mutation must not modify published account slices; blank names/tokens and duplicate names fail validation without revealing tokens.
 - [ ] Run `go test ./internal/config ./internal/server` and confirm failures before implementation.
 - [ ] Extend config defaults, cloning, policy conversion and save. Extend ExportConfig, import parsing/defaults/validation, diffGlobals and chosen apply globals. Treat githubAccounts as a secret-containing list and mask each token independently in preview.
-- [ ] Verify import choices `current`/`imported` for both new fields and legacy documents. Add documentation showing two different users, `githubApiConcurrency: 4`, `githubAccountConcurrency: 2`, `cocurrencyNum: 12`, and explain per-credential pacing, global caps, private repository access and pool precedence.
+- [ ] Verify import choices `existing`/`imported` for both new fields and legacy documents. Add documentation showing two different users, `githubApiConcurrency: 4`, `githubAccountConcurrency: 2`, `cocurrencyNum: 12`, and explain per-credential pacing, global caps, private repository access and pool precedence.
 - [ ] Run focused tests, commit only Task 2 files and write the report.
 
 ### Task 3: Synchronization integrations and final validation
 
-**Files:** `internal/issue/issue.go`, `internal/discussion/discussion.go`, `internal/scm/github/github.go`, tests in those packages and any narrowly needed test utilities.
+**Files:** `internal/issue/issue.go`, `internal/discussion/discussion.go`, `internal/scm/github/github.go`, `internal/wiki/wiki.go`, tests in those packages and any narrowly needed test utilities.
 
-**Interfaces:** Consume `githubapi.Do` and `config.GetGitHubAccountsContext`. Wrap each existing retry callback in `Do`; callbacks return `(Observation, error)` and authenticate using the chosen token. Reuse immutable REST base clients with `WithAuthToken`, avoiding empty-token auth; preserve BaseURL and existing test seams.
+**Interfaces:** Consume `githubapi.Do` and `config.GetGitHubAccountsContext`. Wrap each existing retry callback in `Do`; callbacks return `(Observation, error)` and authenticate using the chosen token. Build a fresh REST client over a copied HTTP client before `WithAuthToken`, avoiding empty-token auth; preserve BaseURL and existing test seams. The pinned go-github/v56 WithAuthToken mutates shared HTTP transport, so it must not wrap a shared client directly. A small helper shared by consumers may live in internal/githubapi.
 
 ```go
 err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
     return githubapi.Do(ctx, "core", accounts, func(token string) (githubapi.Observation, error) {
-        client := baseClient
-        if token != "" { client = baseClient.WithAuthToken(token) }
+        httpCopy := *baseClient.Client()
+        client := github.NewClient(&httpCopy)
+        client.BaseURL, client.UploadURL = baseClient.BaseURL, baseClient.UploadURL
+        client.UserAgent = baseClient.UserAgent
+        if token != "" { client = client.WithAuthToken(token) }
         response, err := performRequest(client)
         return githubapi.ObserveREST(response, err), err
     })

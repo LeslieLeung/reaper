@@ -18,7 +18,7 @@ Expose `githubapi.Account` with `Name` and `Token`, `AcquireAccount(ctx, resourc
 
 ## Integration
 
-Issue pages and comment pages, Discussion queries/comments/replies, repository discovery, release metadata/assets and asset authorization use the shared selection helper. Keep pagination, retry counts, cache writes and repository locking unchanged. REST clients use an immutable authenticated copy for each selected token, preserving custom BaseURL settings. GraphQL creates an authenticated client for each selected credential; successful query quota belongs to that permit. Asset body transfers remain outside long-lived API permits once authorization returns.
+Issue pages and comment pages, Discussion queries/comments/replies, repository discovery, wiki availability metadata, release metadata/assets and asset authorization use the shared selection helper. Keep pagination, retry counts, cache writes, wiki Git transfers and repository locking unchanged. REST clients use a fresh client with a copied HTTP client for each selected token, preserving custom BaseURL settings. In go-github/v56, WithAuthToken shares and changes the original HTTP client's transport, so never call it on a shared base client. GraphQL creates an authenticated client for each selected credential; successful query quota belongs to that permit. Asset body transfers remain outside long-lived API permits once authorization returns.
 
 ## Verification
 
