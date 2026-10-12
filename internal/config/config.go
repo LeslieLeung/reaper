@@ -89,14 +89,14 @@ var configPublicationReadHookForTest atomic.Pointer[configPublicationReadTestHoo
 func Init() {
 	nextViper := viper.New()
 	nextViper.SetConfigFile(Path)
-	err := nextViper.ReadInConfig()
+	err := readConfigFile(nextViper)
 	if err != nil {
 		ui.ErrorfExit("Error reading config file, %s", err)
 	}
 	var next Config
 	err = nextViper.Unmarshal(&next)
 	if err != nil {
-		ui.ErrorfExit("Error unmarshalling config file, %s", err)
+		ui.ErrorfExit("Error unmarshalling config file: check configuration field types")
 	}
 	seedDefaults(&next)
 	if !nextViper.IsSet("githubScheduleJitter") {

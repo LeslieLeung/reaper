@@ -3,6 +3,8 @@ package config
 import (
 	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,6 +13,50 @@ import (
 	"github.com/wnarutou/gitrieve/internal/typedef"
 	"gopkg.in/yaml.v3"
 )
+
+// Decoder type errors must not render secret-bearing values before validation.
+func TestAccountPoolMalformedShapesDoNotLeakSecrets(t *testing.T) {
+	for name, content := range map[string]string{
+		"token map":    "githubAccounts: [{name: alice, token: {value: ghp_sensitive-secret}}]",
+		"scalar entry": "githubAccounts: [ghp_sensitive-secret]",
+		"token list":   "githubAccounts: [{name: alice, token: [ghp_sensitive-secret]}]",
+		"scalar pool":  "githubAccounts: ghp_sensitive-secret",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseImport(content)
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "ghp_sen")
+			writeTmpConfig(t, accountPoolYAML)
+			require.NoError(t, os.WriteFile(Path, []byte(content), 0o644))
+			err = Reload()
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "ghp_sen")
+			require.Equal(t, "alice-secret", GetIns().GitHubAccounts[0].Token)
+		})
+	}
+}
+
+// Init exits on invalid input; exercise its actual diagnostic in a child process.
+func TestAccountPoolInitRejectsMalformedShapeWithoutLeaking(t *testing.T) {
+	if path := os.Getenv("GITRIEVE_TEST_MALFORMED_POOL_PATH"); path != "" {
+		Path = path
+		Init()
+		return
+	}
+	for _, content := range []string{
+		"githubAccounts: [{name: alice, token: {value: ghp_sensitive-secret}}]",
+		"githubAccounts: [ghp_sensitive-secret]",
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+		cmd := exec.Command(os.Args[0], "-test.run=^TestAccountPoolInitRejectsMalformedShapeWithoutLeaking$")
+		cmd.Env = append(os.Environ(), "GITRIEVE_TEST_MALFORMED_POOL_PATH="+path)
+		output, err := cmd.CombinedOutput()
+		require.Error(t, err)
+		require.NotContains(t, string(output), "ghp_sen")
+		require.Contains(t, string(output), "githubAccounts")
+	}
+}
 
 const accountPoolYAML = `githubToken: legacy-secret
 githubAccounts:

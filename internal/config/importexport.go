@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -12,7 +14,82 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var readConfigFile = func(v *viper.Viper) error { return v.ReadInConfig() }
+var readConfigFile = func(v *viper.Viper) error {
+	content, err := os.ReadFile(v.ConfigFileUsed())
+	if err != nil {
+		return err
+	}
+	if _, err := parseConfigYAML(content); err != nil {
+		return err
+	}
+	// Decode exactly the validated bytes; re-reading the file could admit a
+	// different generation. Generic decoder diagnostics can contain credentials.
+	if err := v.ReadConfig(bytes.NewReader(content)); err != nil {
+		return fmt.Errorf("invalid configuration field structure")
+	}
+	return nil
+}
+
+// parseConfigYAML checks credential shapes without formatting source values.
+// Aliases are supported; unexpected decoder failures are also sanitized by the
+// callers, so merge keys or other YAML constructs cannot expose raw secrets.
+func parseConfigYAML(content []byte) (*yaml.Node, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(content, &root); err != nil {
+		return nil, fmt.Errorf("invalid YAML syntax")
+	}
+	if len(root.Content) == 0 {
+		return &root, nil
+	}
+	document := resolveYAMLNode(root.Content[0])
+	if document == nil || document.Kind != yaml.MappingNode {
+		if document != nil && document.Tag == "!!null" {
+			return &root, nil
+		}
+		return nil, fmt.Errorf("configuration must be a mapping")
+	}
+	for i := 0; i+1 < len(document.Content); i += 2 {
+		if !strings.EqualFold(document.Content[i].Value, "githubAccounts") {
+			continue
+		}
+		pool := resolveYAMLNode(document.Content[i+1])
+		if pool != nil && pool.Tag == "!!null" {
+			continue
+		}
+		if pool == nil || pool.Kind != yaml.SequenceNode {
+			return nil, fmt.Errorf("githubAccounts must be a list (line %d)", document.Content[i+1].Line)
+		}
+		for index, item := range pool.Content {
+			account := resolveYAMLNode(item)
+			if account == nil || account.Kind != yaml.MappingNode {
+				return nil, fmt.Errorf("githubAccounts entry %d must be a mapping (line %d)", index+1, item.Line)
+			}
+			for field := 0; field+1 < len(account.Content); field += 2 {
+				key := account.Content[field]
+				if key.Value != "name" && key.Value != "token" {
+					continue
+				}
+				value := resolveYAMLNode(account.Content[field+1])
+				if value == nil || value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+					return nil, fmt.Errorf("githubAccounts entry %d %s must be a string (line %d)", index+1, key.Value, account.Content[field+1].Line)
+				}
+			}
+		}
+	}
+	return &root, nil
+}
+
+func resolveYAMLNode(node *yaml.Node) *yaml.Node {
+	seen := map[*yaml.Node]bool{}
+	for node != nil && node.Kind == yaml.AliasNode {
+		if seen[node] {
+			return nil
+		}
+		seen[node] = true
+		node = node.Alias
+	}
+	return node
+}
 
 // ServerSection mirrors the `server:` section of config.yaml. It carries both
 // yaml and mapstructure tags so it can be (de)serialized directly and read via
@@ -180,7 +257,7 @@ func readReloadSnapshotLocked() (*ReloadSnapshot, error) {
 	}
 	var next Config
 	if err := nv.Unmarshal(&next); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config file: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal config file: check configuration field types")
 	}
 	seedDefaults(&next)
 	if !nv.IsSet("githubScheduleJitter") {
@@ -276,13 +353,13 @@ func seedExportDefaults(doc *ExportConfig, jitterPresent bool) {
 // for user/org entries so their identity keys resolve. It does not validate
 // identities — ValidateImport collects every violation for the caller.
 func ParseImport(yamlStr string) (*ExportConfig, error) {
-	var root yaml.Node
-	if err := yaml.Unmarshal([]byte(yamlStr), &root); err != nil {
-		return nil, fmt.Errorf("invalid YAML: %w", err)
+	root, err := parseConfigYAML([]byte(yamlStr))
+	if err != nil {
+		return nil, err
 	}
 	var doc ExportConfig
 	if err := yaml.Unmarshal([]byte(yamlStr), &doc); err != nil {
-		return nil, fmt.Errorf("invalid YAML: %w", err)
+		return nil, fmt.Errorf("invalid YAML field types or duplicate fields")
 	}
 	for i := range doc.Repository {
 		doc.Repository[i].URL = doc.Repository[i].EffectiveURL()

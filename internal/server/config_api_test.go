@@ -16,6 +16,39 @@ import (
 	"github.com/wnarutou/gitrieve/internal/typedef"
 )
 
+// Preview/apply must return useful rejection diagnostics without allowing
+// decoder-generated token prefixes into actual HTTP response bodies.
+func TestAccountPoolMalformedShapesHTTPDoNotLeakOrPublish(t *testing.T) {
+	for _, route := range []string{"/api/config/import/preview", "/api/config/import"} {
+		for _, content := range []string{
+			"githubAccounts: [{name: alice, token: {value: ghp_sensitive-secret}}]",
+			"githubAccounts: [ghp_sensitive-secret]",
+		} {
+			t.Run(route+content[:17], func(t *testing.T) {
+				loadTempConfig(t, "githubAccounts: [{name: alice, token: original-token}]\n")
+				testDB, err := db.Initialize(":memory:")
+				require.NoError(t, err)
+				defer testDB.Close()
+				s := server.NewConfigTestServer(config.GetIns(), testDB)
+				before, err := os.ReadFile(config.Path)
+				require.NoError(t, err)
+				body, err := json.Marshal(map[string]string{"config": content})
+				require.NoError(t, err)
+				code, response := getJSON(t, s, http.MethodPost, route, string(body))
+				require.Equal(t, http.StatusBadRequest, code)
+				encoded, err := json.Marshal(response)
+				require.NoError(t, err)
+				require.NotContains(t, string(encoded), "ghp_sen")
+				require.Equal(t, "original-token", s.Cfg().GitHubAccounts[0].Token)
+				require.Equal(t, "original-token", config.GetIns().GitHubAccounts[0].Token)
+				after, err := os.ReadFile(config.Path)
+				require.NoError(t, err)
+				require.Equal(t, before, after)
+			})
+		}
+	}
+}
+
 // Omitting the secret-containing list from global diffs hides changes; echoing
 // its raw value leaks every credential in the HTTP response.
 func TestPreviewAccountPoolMasksTokensAndKeepsLabels(t *testing.T) {
