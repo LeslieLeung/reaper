@@ -24,7 +24,7 @@ func (m *Monitor) HealthCheck(c *gin.Context) {
 		"code": http.StatusOK,
 		"data": gin.H{
 			"status":    "ok",
-			"uptime":    time.Since(m.startTime).String(),
+			"uptime":    formatUptime(time.Since(m.startTime)),
 			"timestamp": time.Now().Format(time.RFC3339),
 		},
 	})
@@ -36,7 +36,7 @@ func (m *Monitor) GetMetrics(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code": http.StatusOK,
 		"data": gin.H{
-			"uptime":     time.Since(m.startTime).String(),
+			"uptime":     formatUptime(time.Since(m.startTime)),
 			"timestamp":  time.Now().Format(time.RFC3339),
 			"goroutines": runtime.NumGoroutine(),
 			"go_version": runtime.Version(),

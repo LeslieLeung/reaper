@@ -196,6 +196,9 @@ func readReloadSnapshotLocked() (*ReloadSnapshot, error) {
 	if err := validateIdentity(&next); err != nil {
 		return nil, err
 	}
+	if err := validateStorages(next.Storage); err != nil {
+		return nil, err
+	}
 	return &ReloadSnapshot{config: Clone(&next), viper: nv}, nil
 }
 
@@ -310,7 +313,7 @@ func ParseImport(yamlStr string) (*ExportConfig, error) {
 // ValidateImport checks an imported document for the rules that apply before
 // any import: every repository needs a usable identity (non-empty URL or
 // orgName), no two imported repositories share a normalized URL, and storage
-// names are non-empty and unique. Returns every violation so the caller can
+// names are non-empty and unique with a supported type. Returns every violation so the caller can
 // surface them all at once.
 func ValidateImport(doc *ExportConfig) []string {
 	var errs []string
@@ -328,6 +331,9 @@ func ValidateImport(doc *ExportConfig) []string {
 	}
 	seenStorage := map[string]bool{}
 	for _, st := range doc.Storage {
+		if err := st.ValidateType(); err != nil {
+			errs = append(errs, err.Error())
+		}
 		if st.Name == "" {
 			errs = append(errs, "storage entry has an empty name")
 			continue

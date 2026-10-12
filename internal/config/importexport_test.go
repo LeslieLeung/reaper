@@ -11,6 +11,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestRejectUnsupportedStorageConfig(t *testing.T) {
+	for _, kind := range []string{"s3", "ftp", ""} {
+		t.Run(kind, func(t *testing.T) {
+			writeTmpConfig(t, "storage:\n  - name: local\n    type: file\n    path: ./repo\n")
+			before := GetIns()
+			content := "storage:\n  - name: remote\n    type: '" + kind + "'\n"
+			doc, err := ParseImport(content)
+			require.NoError(t, err)
+			errs := ValidateImport(doc)
+			require.NotEmpty(t, errs)
+			require.Contains(t, errs[0], "only 'file' storage is supported")
+			require.NoError(t, os.WriteFile(Path, []byte(content), 0o644))
+			err = Reload()
+			require.ErrorContains(t, err, "only 'file' storage is supported")
+			require.Equal(t, before, GetIns())
+		})
+	}
+}
+
 func TestDurationStringYAML(t *testing.T) {
 	// Marshal produces the Go string form, usable as config.yaml.
 	out, err := yaml.Marshal(ExportConfig{RetryBaseDelay: DurationString(5 * time.Second)})

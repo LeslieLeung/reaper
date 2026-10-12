@@ -24,7 +24,7 @@ Git Retrieve（gitrieve）是一个用于从任何Git服务器归档 Git 仓库�
 - 从任何Git服务器归档 Git 仓库
 - 归档用户/组织的仓库（见 [配置](https://github.com/wnarutou/gitrieve/wiki/Configuration#repository))
 - 定时任务
-- 多种存储类型（见 [存储](#存储)）
+- 本地文件存储（见 [存储](#存储)）
 - **防删除同步** —— 同步过程绝不会删除本地已拉取的代码与完整历史，即使上游仓库被下线、DMCA 禁用、删除、私有化或被替换为单个 README（见 [防删除同步](#防删除同步)）
 - Docker 支持（见 [使用 Docker 运行](#使用-docker-运行)）
 
@@ -47,7 +47,6 @@ repository:
     cron: "0 * * * *"
     storage:
       - localFile
-      - backblaze
     useCache: True
     allBranches: True
     depth: 0
@@ -60,13 +59,6 @@ storage:
   - name: localFile
     type: file
     path: ./repo
-  - name: backblaze
-    type: s3
-    endpoint: s3.us-west-000.backblazeb2.com
-    region: us-west-000
-    bucket: your-bucket-name
-    accessKeyID: your-access-key-id
-    secretAccessKey: your-secret-access-key
 ```
 
 然后，你可以使用配置文件运行gitrieve。
@@ -174,10 +166,9 @@ Cron、手动执行和批量重试实际并发数；超出上限的任务保持 
 
 ## 存储
 
-gitrieve支持多种存储类型。
+gitrieve 目前仅支持本地文件存储。暂不支持 S3 兼容存储；已有 `type: s3` 配置需要改为 `type: file` 并设置本地 `path`，才能启动、重载或导入配置。
 
-- [x] 文件
-- [x] AWS S3
+- [x] 本地文件
 
 ## 防删除同步
 
@@ -195,7 +186,7 @@ gitrieve 的一个核心设计目标是：**一旦代码和历史被拉取到本
 - `allBranches: true` —— 确保每个分支的提交都被拉入本地对象库。
 - `useCache: true` —— 跨同步保留本地缓存目录（含 `.git`）作为额外的磁盘安全网（若不开启，工作目录会在每次同步结束时被删除）。
 
-需要注意的一点：归档写入固定文件名（如 `repo.tar.gz`），会覆盖同路径下的旧归档。因此，若上游仍可访问但其默认分支被重写为单个 README，*新*快照会替换该路径下此前正常的归档。本地缓存的代码与历史仍然安全（见上文），但若要保留不同的历史快照，建议在对象存储（S3/B2）上启用版本控制，或以带版本号的路径保存归档。
+需要注意的一点：归档写入固定文件名（如 `repo.tar.gz`），会覆盖同路径下的旧归档。因此，若上游仍可访问但其默认分支被重写为单个 README，*新*快照会替换该路径下此前正常的归档。本地缓存的代码与历史仍然安全（见上文），但若要保留不同的历史快照，建议另行复制归档，以带版本号的路径保存历史快照。
 
 ## 使用 Docker 运行
 

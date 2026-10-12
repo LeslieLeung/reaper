@@ -19,7 +19,7 @@ docker-run:
 # Run all tests
 test:
 	go test ./...
-	node --test web/main.test.cjs
+	node --test web/main.test.cjs web/tests/*.test.js
 
 # Quick build sanity check (builds then removes the binary)
 dry-build:

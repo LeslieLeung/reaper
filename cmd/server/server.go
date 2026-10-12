@@ -13,6 +13,7 @@ import (
 	"github.com/go-co-op/gocron/v2"
 	"github.com/spf13/cobra"
 	"github.com/wnarutou/gitrieve/internal/auth"
+	"github.com/wnarutou/gitrieve/internal/buildinfo"
 	"github.com/wnarutou/gitrieve/internal/config"
 	"github.com/wnarutou/gitrieve/internal/db"
 	"github.com/wnarutou/gitrieve/internal/executor"
@@ -94,7 +95,8 @@ func (s *Server) setupRoutes(cfg *config.Config) {
 	// Main page (public)
 	s.router.GET("/", func(c *gin.Context) {
 		c.HTML(200, "index.html", gin.H{
-			"title": "Gitrieve",
+			"title":   "Gitrieve",
+			"version": buildinfo.Version,
 		})
 	})
 

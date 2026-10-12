@@ -13,9 +13,8 @@ import (
 
 // secretFields are config values never echoed in plaintext in a diff.
 var secretFields = map[string]bool{
-	"githubToken":     true,
-	"authToken":       true,
-	"secretAccessKey": true,
+	"githubToken": true,
+	"authToken":   true,
 }
 
 // maskSecret returns "***" for a non-empty secret value, the value otherwise.
@@ -52,11 +51,6 @@ var storageFields = []struct {
 	{"name", func(s typedef.MultiStorage) interface{} { return s.Name }},
 	{"type", func(s typedef.MultiStorage) interface{} { return s.Type }},
 	{"path", func(s typedef.MultiStorage) interface{} { return s.Path }},
-	{"endpoint", func(s typedef.MultiStorage) interface{} { return s.Endpoint }},
-	{"bucket", func(s typedef.MultiStorage) interface{} { return s.Bucket }},
-	{"region", func(s typedef.MultiStorage) interface{} { return s.Region }},
-	{"accessKeyID", func(s typedef.MultiStorage) interface{} { return s.AccessKeyID }},
-	{"secretAccessKey", func(s typedef.MultiStorage) interface{} { return s.SecretAccessKey }},
 }
 
 // stringSetEq compares two string slices as unordered sets (used for the

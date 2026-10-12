@@ -1072,12 +1072,7 @@ func TestQueuedJobUsesOneCompleteAcceptedConfigGeneration(t *testing.T) {
 			},
 		},
 		Storage: []typedef.MultiStorage{{
-			Storage:         typedef.Storage{Name: "archive", Type: "s3", Path: "old-path"},
-			Endpoint:        "old-endpoint",
-			Bucket:          "old-bucket",
-			Region:          "old-region",
-			AccessKeyID:     "old-access",
-			SecretAccessKey: "old-secret",
+			Storage: typedef.Storage{Name: "archive", Type: "file", Path: "old-path"},
 		}},
 		GitHubToken:                 "old-token",
 		ConcurrencyNum:              1,
@@ -1117,11 +1112,6 @@ func TestQueuedJobUsesOneCompleteAcceptedConfigGeneration(t *testing.T) {
 	newConfig.GitHubLowRemainingThreshold = 209
 	newConfig.GitHubScheduleJitter = 210 * time.Millisecond
 	newConfig.Storage[0].Path = "new-path"
-	newConfig.Storage[0].Endpoint = "new-endpoint"
-	newConfig.Storage[0].Bucket = "new-bucket"
-	newConfig.Storage[0].Region = "new-region"
-	newConfig.Storage[0].AccessKeyID = "new-access"
-	newConfig.Storage[0].SecretAccessKey = "new-secret"
 	exec.RefreshConfig(newConfig)
 	config.SetIns(newConfig)
 	close(blockerRelease)

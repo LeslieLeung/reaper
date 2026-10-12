@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,6 +12,35 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFileDBReadersDoNotBlockWriter(t *testing.T) {
+	d, err := Initialize(filepath.Join(t.TempDir(), "readers.db"))
+	require.NoError(t, err)
+	defer d.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	insertExecution(t, d, "reader-writer", "github.com/acme/widgets", ComponentRunning)
+	require.NoError(t, d.CreateComponents(ctx, "reader-writer", []ComponentName{ComponentRelease}))
+
+	// Hold a reader's snapshot open, as an SSE stream can while sending logs.
+	rows, err := d.QueryContext(ctx, `SELECT status FROM execution_components`)
+	require.NoError(t, err)
+	defer rows.Close()
+	require.True(t, rows.Next())
+	require.NoError(t, d.FinishComponent(ctx, "reader-writer", ComponentRelease, ComponentCompleted, time.Now(), ""))
+	require.NoError(t, rows.Close())
+
+	// A writer transaction must also leave readers able to see committed data.
+	tx, err := d.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `UPDATE execution_components SET status = 'failed'`)
+	require.NoError(t, err)
+	components, err := d.ListComponents(ctx, "reader-writer")
+	require.NoError(t, err)
+	require.Len(t, components, 1)
+	require.Equal(t, ComponentCompleted, components[0].Status)
+}
 
 func TestDatabaseInitialization(t *testing.T) {
 	db, err := Initialize(":memory:")

@@ -8,7 +8,10 @@
 </head>
 <body>
     <nav class="topbar">
-        <div class="brand">Gitrieve</div>
+        <div class="brand">
+            Gitrieve
+            <span class="app-version" title="Server version: {{ .version }}" aria-label="Server version: {{ .version }}">{{ .version }}</span>
+        </div>
         <div class="nav-links">
             <a href="#/jobs" data-route="jobs" class="active">Jobs</a>
             <a href="#/repositories" data-route="repositories">Repositories</a>
@@ -108,20 +111,7 @@
                 <input type="hidden" id="storage-original-name">
                 <div class="form-grid">
                     <label class="field">Name *<input id="storage-name" required placeholder="e.g. localFile"></label>
-                    <label class="field">Type
-                        <select id="storage-type">
-                            <option value="file">file</option>
-                            <option value="s3">s3</option>
-                        </select>
-                    </label>
-                    <label class="field" id="storage-path-field">Path<input id="storage-path" placeholder="/app/repo"></label>
-                    <div class="s3-fields">
-                        <label class="field">Endpoint<input id="storage-endpoint" placeholder="s3.amazonaws.com"></label>
-                        <label class="field">Bucket<input id="storage-bucket"></label>
-                        <label class="field">Region<input id="storage-region"></label>
-                        <label class="field">AccessKeyID<input id="storage-akid"></label>
-                        <label class="field">SecretAccessKey<input id="storage-sk" type="password" autocomplete="new-password"></label>
-                    </div>
+                    <label class="field">Path<input id="storage-path" placeholder="/app/repo"></label>
                 </div>
                 <div class="form-actions">
                     <button type="button" id="storage-form-cancel" class="btn btn-sm">Cancel</button>

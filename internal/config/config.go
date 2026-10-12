@@ -103,11 +103,23 @@ func Init() {
 	if err := validateIdentity(&next); err != nil {
 		ui.ErrorfExit("Invalid configuration: %s", err)
 	}
+	if err := validateStorages(next.Storage); err != nil {
+		ui.ErrorfExit("Invalid configuration: %s", err)
+	}
 	snapshot := Clone(&next)
 	stateMu.Lock()
 	vp = nextViper
 	setInsLocked(snapshot)
 	stateMu.Unlock()
+}
+
+func validateStorages(storages []typedef.MultiStorage) error {
+	for _, storage := range storages {
+		if err := storage.ValidateType(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // seedDefaults fills zero-valued global options with their defaults. It runs in

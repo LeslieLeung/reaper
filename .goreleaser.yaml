@@ -10,7 +10,7 @@ builds:
       - linux
       - windows
       - darwin
-    ldflags: -s -w
+    ldflags: -s -w -X github.com/wnarutou/gitrieve/internal/buildinfo.Version={{ .Version }}
     goarch:
       - amd64
       - arm64
