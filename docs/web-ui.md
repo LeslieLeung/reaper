@@ -49,6 +49,31 @@ or `docker build --build-arg VERSION=1.2.3 -t gitrieve .`.
 - **Cancel a job** — stop a running or pending job.
 - **Real-time logs** — every job has a live log stream that updates as the job runs, using Server-Sent Events. The stream closes automatically when the job finishes.
 
+### Log retention
+
+The server cleans historical execution logs in the background at startup and
+every 24 hours. `server.logRetentionMonths` controls the retention period in
+calendar months (default: `2`). Missing, zero, or negative values use the default.
+For example:
+
+```yaml
+server:
+  logRetentionMonths: 2
+```
+
+Cleanup uses the **execution's end time**, not each log line's timestamp. All log
+lines for a completed, failed, or cancelled execution are removed only when its
+`end_time` is strictly earlier than the retention cutoff. Pending/running
+executions, executions without an end time, and executions ending exactly at the
+cutoff keep their logs. If the target month is shorter, its last day is used
+(for example, March 31 minus one month is February 28, or 29 in a leap year).
+
+Execution records and component outcomes remain available for job history and
+repository health statistics. Deletion is batched, and log lookups use an index.
+SQLite reuses the freed database pages; cleanup does not run a blocking `VACUUM`.
+Restart the server or reload configuration to pick up a changed retention value;
+the next cleanup pass reads the current setting.
+
 ### Repository sync health
 
 The Repositories page is a server-paginated fleet overview. Summary cards show

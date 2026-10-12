@@ -25,11 +25,13 @@ import (
 )
 
 type Server struct {
-	router      *gin.Engine
-	scheduler   gocron.Scheduler
-	database    *db.DB
-	executor    *executor.Executor
-	schedulerMu sync.Mutex
+	router           *gin.Engine
+	scheduler        gocron.Scheduler
+	database         *db.DB
+	executor         *executor.Executor
+	schedulerMu      sync.Mutex
+	logCleanupCancel context.CancelFunc
+	logCleanupDone   chan struct{}
 }
 
 func NewServer(cfg *config.Config) *Server {
@@ -133,6 +135,7 @@ func (s *Server) setupRoutes(cfg *config.Config) {
 	apiGroup.POST("/api/config/import", api.ApplyImport)
 	apiGroup.POST("/api/config/reload", api.ReloadConfig)
 	apiGroup.GET("/api/metrics", monitor.GetMetrics)
+	s.startLogCleanup(24 * time.Hour)
 }
 
 func (s *Server) setupTestRoutes(db *db.DB) {
@@ -209,6 +212,10 @@ func (s *Server) Close() error {
 	defer s.schedulerMu.Unlock()
 
 	var schedulerErr, executorErr, databaseErr error
+	if s.logCleanupCancel != nil {
+		s.logCleanupCancel()
+		<-s.logCleanupDone
+	}
 	if s.scheduler != nil {
 		schedulerErr = s.scheduler.Shutdown()
 	}

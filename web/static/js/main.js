@@ -923,7 +923,7 @@ async function renderConfig() {
         <div class="panel"><div class="panel-pad">
             <h3>配置操作</h3>
             <button id="btn-config-reload" class="btn">刷新配置（从磁盘重载 config.yaml）</button>
-            <p class="muted" style="margin-top:8px;">server 段（host/port/authEnabled/dbPath）改动需重启 server 生效；daemon 排程需重启 daemon。修改 authEnabled/authToken 后若忘记令牌，可能无法访问本界面。</p>
+            <p class="muted" style="margin-top:8px;">server 段的监听地址、认证和数据库路径改动需重启 server 生效；logRetentionMonths（日志保留月数）在下次清理时生效。daemon 排程需重启 daemon。修改 authEnabled/authToken 后若忘记令牌，可能无法访问本界面。</p>
         </div></div>`;
 
     loadExport();
