@@ -159,20 +159,17 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	}
 	defer unlock()
 	var gitDir string
-	var gitSuffix string
 	var gitUrl string
 	if iswiki {
 		gitDir = path.Join(workingDir, r.Host, r.Owner, repoName, "wiki")
-		gitSuffix = ".wiki.git"
 		gitUrl = repo.URL + ".wiki"
 	} else {
 		gitDir = path.Join(workingDir, r.Host, r.Owner, repoName, "code")
-		gitSuffix = ".git"
 		gitUrl = repo.URL
 	}
 	var exist bool
 	// check if the repo already exists
-	if _, err := os.Stat(path.Join(gitDir, gitSuffix)); err == nil {
+	if _, err := os.Stat(path.Join(gitDir, git.GitDirName)); err == nil {
 		exist = true
 	}
 	var gitRepo *git.Repository
@@ -189,22 +186,29 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	// One writer is shared across clone/fetch/pull so the throttle window is
 	// continuous for the whole sync.
 	progress := &progressWriter{}
+	accounts := newGitAccounts(ctx, r.Host)
 
 	// clone the repo if it does not exist, otherwise pull
 	if !exist {
 		isUpdated = true
-		_, err = git.PlainCloneContext(syncCtx, gitDir, false, &git.CloneOptions{
-			URL:      "https://" + gitUrl,
-			Progress: progress,
-			Depth:    depth,
+		err = accounts.do(syncCtx, func(auth transport.AuthMethod) error {
+			_, cloneErr := git.PlainCloneContext(syncCtx, gitDir, false, &git.CloneOptions{
+				URL:      "https://" + gitUrl,
+				Auth:     auth,
+				Progress: progress,
+				Depth:    depth,
+			})
+			if cloneErr != nil {
+				// Fresh clones may initialize .git before authentication fails.
+				// Clean only this new checkout before trying another credential.
+				if cleanupErr := os.RemoveAll(gitDir); cleanupErr != nil {
+					return fmt.Errorf("cleaning failed clone: %w", cleanupErr)
+				}
+			}
+			return cloneErr
 		})
 
 		if err != nil {
-			// Remove the partial clone so the next sync retries cleanly. This
-			// branch holds no previously-pulled data, so it is safe — the
-			// deletion-safe guarantee only covers existing local history, which
-			// is handled by the fetch/pull path below.
-			os.RemoveAll(gitDir)
 			if shouldLogCloneError(iswiki, err) {
 				ui.Errorf("Error cloning repository, %s", err)
 			}
@@ -218,15 +222,24 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 		ui.Errorf("Error opening repository, %s", err)
 		return err
 	}
+	remote, err := gitRepo.Remote("origin")
+	if err != nil {
+		ui.Errorf("Error get remote, %s", err)
+		return err
+	}
+	accounts.restrictRemote(remote.Config().URLs)
 
 	// fetch all remote branches
-	err = gitRepo.FetchContext(syncCtx, &git.FetchOptions{
-		RemoteName: "origin",
-		RefSpecs: []config.RefSpec{
-			config.RefSpec("+refs/heads/*:refs/remotes/origin/*"),
-		},
-		Force:    true,
-		Progress: progress,
+	err = accounts.do(syncCtx, func(auth transport.AuthMethod) error {
+		return gitRepo.FetchContext(syncCtx, &git.FetchOptions{
+			RemoteName: "origin",
+			RefSpecs: []config.RefSpec{
+				config.RefSpec("+refs/heads/*:refs/remotes/origin/*"),
+			},
+			Auth:     auth,
+			Force:    true,
+			Progress: progress,
+		})
 	})
 	if err != nil && err != git.NoErrAlreadyUpToDate {
 		ui.Errorf("Error fetching remote branches, %s", err)
@@ -251,12 +264,12 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	var remoteDefaultBranchName string
 	var remoteDefaultBranchRef plumbing.ReferenceName
 
-	remote, err := gitRepo.Remote("origin")
-	if err != nil {
-		ui.Errorf("Error get remote, %s", err)
-		return err
-	}
-	remoteRefs, err := remote.ListContext(syncCtx, &git.ListOptions{})
+	var remoteRefs []*plumbing.Reference
+	err = accounts.do(syncCtx, func(auth transport.AuthMethod) error {
+		var listErr error
+		remoteRefs, listErr = remote.ListContext(syncCtx, &git.ListOptions{Auth: auth})
+		return listErr
+	})
 	if err != nil {
 		// The default branch cannot be determined without this listing, and a
 		// cancellation must stop the sync here rather than falling through.
@@ -275,14 +288,12 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 		if ref.Name().IsRemote() {
 			// get remote branch name
 			remoteBranchName := ref.Name().Short()
+			localBranchName := remoteBranchName[len("origin/"):]
 
 			// if not pull all branches and this branch is not default then skip
-			if !allBranches && (remoteDefaultBranchName != remoteBranchName) {
+			if !allBranches && (remoteDefaultBranchName != localBranchName) {
 				return nil
 			}
-
-			// set local branch name
-			localBranchName := remoteBranchName[len("origin/"):]
 
 			// create local branch reference
 			branchRef := plumbing.NewBranchReferenceName(localBranchName)
@@ -341,21 +352,24 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 			}
 
 			// pull from upstream branch
-			err = w.PullContext(syncCtx, &git.PullOptions{
-				RemoteName:    "origin",
-				ReferenceName: branchRef,
-				// pull all commits, not only the latest
-				Depth:    depth,
-				Progress: progress,
+			err = accounts.do(syncCtx, func(auth transport.AuthMethod) error {
+				return w.PullContext(syncCtx, &git.PullOptions{
+					RemoteName:    "origin",
+					ReferenceName: branchRef,
+					// pull all commits, not only the latest
+					Auth:     auth,
+					Depth:    depth,
+					Progress: progress,
+				})
 			})
 			if err == git.NoErrAlreadyUpToDate {
 				ui.Printf("local branch %s already up to date. \n", localBranchName)
 			} else if err != nil {
 				ui.Errorf("Error pulling local branch %s, %s", localBranchName, err)
-				if syncCtx.Err() != nil {
+				if syncCtx.Err() != nil || gitAccountError(err) {
 					// Cancelled — stop the whole sync instead of continuing to
-					// the remaining branches. The fetched objects stay in the
-					// local cache and are picked up on the next run.
+					// remaining branches. Exhausted authentication candidates
+					// must also fail the job, preserving the existing local cache.
 					return err
 				}
 			} else {

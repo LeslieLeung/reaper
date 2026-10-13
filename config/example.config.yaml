@@ -65,6 +65,8 @@ storage:
 githubToken: xxx
 # Optional pool: use tokens belonging to two different GitHub users. A nonempty
 # pool takes precedence over githubToken. Leave it empty to use the legacy token.
+# GitHub HTTPS clone/fetch/pull also use this pool, rotating on 401/403/404.
+# Private code repositories need tokens with code-read permission.
 githubAccounts:
   - name: alice
     token: alice-personal-access-token
