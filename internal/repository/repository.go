@@ -195,27 +195,31 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	// One writer is shared across clone/fetch/pull so the throttle window is
 	// continuous for the whole sync.
 	progress := &progressWriter{}
+	accounts := newGitAccounts(ctx, r.Host)
 
 	// clone the repo if it does not exist, otherwise pull
 	if !exist {
 		isUpdated = true
 		ui.Printf("Sync phase: Git clone started")
-		err = retryGitEOF(syncCtx, component+" clone", func() error {
-			store := newGitStorage(gitDir)
-			_, cloneErr := git.CloneContext(syncCtx, store, osfs.New(gitDir), &git.CloneOptions{
-				URL:      "https://" + gitUrl,
-				Progress: progress,
-				Depth:    depth,
-			})
-			cloneErr = store.operationError(cloneErr)
-			if cloneErr != nil {
-				// This path has no previously cached repository. Clean up each
-				// failed attempt before retrying, while still holding the lock.
-				if cleanupErr := os.RemoveAll(gitDir); cleanupErr != nil {
-					return errors.Join(cloneErr, fmt.Errorf("%w: %w", errCloneCleanup, cleanupErr))
+		err = accounts.do(syncCtx, func(auth transport.AuthMethod) error {
+			return retryGitEOF(syncCtx, component+" clone", func() error {
+				store := newGitStorage(gitDir)
+				_, cloneErr := git.CloneContext(syncCtx, store, osfs.New(gitDir), &git.CloneOptions{
+					URL:      "https://" + gitUrl,
+					Auth:     auth,
+					Progress: progress,
+					Depth:    depth,
+				})
+				cloneErr = store.operationError(cloneErr)
+				if cloneErr != nil {
+					// Only fresh failed clones are cleaned before an EOF retry or
+					// account fallback, while still holding the repository lock.
+					if cleanupErr := os.RemoveAll(gitDir); cleanupErr != nil {
+						return errors.Join(cloneErr, fmt.Errorf("%w: %w", errCloneCleanup, cleanupErr))
+					}
 				}
-			}
-			return cloneErr
+				return cloneErr
+			})
 		})
 
 		if err != nil {
@@ -233,18 +237,27 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 		ui.Errorf("Error opening repository, %s", err)
 		return err
 	}
+	remote, err := gitRepo.Remote("origin")
+	if err != nil {
+		ui.Errorf("Error get remote, %s", err)
+		return err
+	}
+	accounts.restrictRemote(remote.Config().URLs)
 
 	// fetch all remote branches
 	ui.Printf("Sync phase: Git fetch started")
-	err = retryGitEOF(syncCtx, component+" fetch", func() error {
-		return store.operationError(gitRepo.FetchContext(syncCtx, &git.FetchOptions{
-			RemoteName: "origin",
-			RefSpecs: []config.RefSpec{
-				config.RefSpec("+refs/heads/*:refs/remotes/origin/*"),
-			},
-			Force:    true,
-			Progress: progress,
-		}))
+	err = accounts.do(syncCtx, func(auth transport.AuthMethod) error {
+		return retryGitEOF(syncCtx, component+" fetch", func() error {
+			return store.operationError(gitRepo.FetchContext(syncCtx, &git.FetchOptions{
+				RemoteName: "origin",
+				RefSpecs: []config.RefSpec{
+					config.RefSpec("+refs/heads/*:refs/remotes/origin/*"),
+				},
+				Auth:     auth,
+				Force:    true,
+				Progress: progress,
+			}))
+		})
 	})
 	if err != nil && err != git.NoErrAlreadyUpToDate {
 		ui.Errorf("Error fetching remote branches, %s", err)
@@ -269,17 +282,14 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	var remoteDefaultBranchName string
 	var remoteDefaultBranchRef plumbing.ReferenceName
 
-	remote, err := gitRepo.Remote("origin")
-	if err != nil {
-		ui.Errorf("Error get remote, %s", err)
-		return err
-	}
 	ui.Printf("Sync phase: remote reference discovery started")
 	var remoteRefs []*plumbing.Reference
-	err = retryGitEOF(syncCtx, component+" reference discovery", func() error {
-		var listErr error
-		remoteRefs, listErr = remote.ListContext(syncCtx, &git.ListOptions{})
-		return listErr
+	err = accounts.do(syncCtx, func(auth transport.AuthMethod) error {
+		return retryGitEOF(syncCtx, component+" reference discovery", func() error {
+			var listErr error
+			remoteRefs, listErr = remote.ListContext(syncCtx, &git.ListOptions{Auth: auth})
+			return listErr
+		})
 	})
 	if err != nil {
 		// The default branch cannot be determined without this listing, and a
@@ -405,19 +415,22 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 				ui.Errorf("Error reading local branch %s before pull, %s", localBranchName, err)
 				return err
 			}
-			pull := func() error {
-				return store.operationError(pullManagedWorktree(syncCtx, gitRepo, w, &git.PullOptions{
-					RemoteName:    "origin",
-					ReferenceName: branchRef,
-					// pull all commits, not only the latest
-					Depth:    depth,
-					Progress: progress,
-				}))
-			}
-			err = retryGitEOF(syncCtx, component+" pull", func() error {
-				return pullWithManagedWorktreeRecovery(pull, func() error {
-					ui.Printf("local branch %s worktree changed during pull; restoring and retrying once.\n", localBranchName)
-					return restoreManagedWorktree(gitRepo, w)
+			err = accounts.do(syncCtx, func(auth transport.AuthMethod) error {
+				pull := func() error {
+					return store.operationError(pullManagedWorktree(syncCtx, gitRepo, w, &git.PullOptions{
+						RemoteName:    "origin",
+						ReferenceName: branchRef,
+						// pull all commits, not only the latest
+						Auth:     auth,
+						Depth:    depth,
+						Progress: progress,
+					}))
+				}
+				return retryGitEOF(syncCtx, component+" pull", func() error {
+					return pullWithManagedWorktreeRecovery(pull, func() error {
+						ui.Printf("local branch %s worktree changed during pull; restoring and retrying once.\n", localBranchName)
+						return restoreManagedWorktree(gitRepo, w)
+					})
 				})
 			})
 			afterPull, refErr := gitRepo.Reference(branchRef, true)
@@ -435,10 +448,10 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 				if isGitEOF(err) || errors.Is(err, errPackCleanup) || errors.Is(err, git.ErrUnstagedChanges) || errors.Is(err, errManagedIndexRecovery) {
 					return err
 				}
-				if syncCtx.Err() != nil {
+				if syncCtx.Err() != nil || gitAccountError(err) {
 					// Cancelled — stop the whole sync instead of continuing to
-					// the remaining branches. The fetched objects stay in the
-					// local cache and are picked up on the next run.
+					// remaining branches. Exhausted authentication candidates
+					// must also fail the job, preserving the existing local cache.
 					return err
 				}
 			} else {

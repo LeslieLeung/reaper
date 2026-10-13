@@ -138,19 +138,33 @@ See the [Web UI guide](docs/web-ui.md) and the [API reference](docs/api.md) for 
 
 ## Configuration
 
-GitHub API traffic from issues, discussions, and releases is coordinated within each gitrieve process. Optional settings and defaults:
+GitHub API traffic is coordinated within each gitrieve process. This example uses tokens belonging to two different GitHub users:
 
 ```yaml
-githubApiConcurrency: 2
+githubAccounts:
+  - name: alice
+    token: alice-personal-access-token
+  - name: bob
+    token: bob-personal-access-token
+githubApiConcurrency: 4
+githubAccountConcurrency: 2
 githubMinRequestInterval: 200ms
 githubLowRemainingThreshold: 100
 githubScheduleJitter: 30s
 syncOverdueGrace: 30m
 syncStuckThreshold: 24h
-cocurrencyNum: 6
+cocurrencyNum: 12
 ```
 
-`githubScheduleJitter: 0s` disables staggering. Staggering applies only to daemon cron jobs; manual commands and Web API jobs start immediately. These settings reduce bursts but do not increase GitHub quota and do not coordinate separate processes or hosts.
+`githubAccounts` defaults to an empty list. A nonempty pool takes precedence over `githubToken`; otherwise the legacy token is used, or REST runs anonymously when no token is set. Account names and tokens must be nonblank, and names must be unique. Each pool account has a concurrency cap (`githubAccountConcurrency`, default `2`); all accounts also share the process-wide cap (`githubApiConcurrency`, default `2`). Legacy single-token authentication retains its global-only concurrency cap. `cocurrencyNum` limits concurrent repository jobs, independently of these API limits.
+
+REST and GraphQL share pacing and concurrency for each credential. `githubMinRequestInterval` spaces request starts per credential, while primary quota pauses apply to the affected account and API resource. A secondary rate limit pauses the whole process. Duplicate tokens share the same limits, and multiple tokens for one GitHub user share that user's quota. A pool of different users can use their aggregate available quotas; it does not increase any user's GitHub quota. For private repositories, pool users need access and their tokens need the required permissions; an account without access may fall back to another eligible account.
+
+HTTPS Git operations for GitHub code repositories and wikis also use the account pool. Each clone, fetch, remote-reference listing, and pull keeps one credential for its entire attempt. Authentication, authorization, or repository-not-found errors corresponding to 401, 403, or 404 rotate through distinct tokens in configured order, with at most one attempt per token for that operation. Later operations in the same job prefer the last successful account. If every account is denied, the job fails and account rotation does not delete an existing cache; failed fresh clone directories are cleaned before another attempt. Without credentials, Git remains anonymous; GitHub tokens are never sent to other repository hosts. Git transfers use repository-job concurrency and do not occupy API concurrency slots. Private-repository tokens also need permission to read code.
+
+Import previews keep account labels and mask every token. The `existing` and `imported` global choices apply separately to `githubAccounts` and `githubAccountConcurrency`; exports and saved configuration contain the actual tokens.
+
+`githubScheduleJitter: 0s` disables staggering. Staggering applies only to daemon cron jobs; manual commands and Web API jobs start immediately. Pacing and concurrency settings reduce bursts; coordination does not extend to separate processes or hosts.
 
 `syncOverdueGrace` and `syncStuckThreshold` default to `30m` and `24h`;
 the stuck threshold applies to both pending and running executions, and

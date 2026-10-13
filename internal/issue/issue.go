@@ -172,8 +172,8 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 	// syncs use the same instant in UTC without reinterpreting wall-clock time.
 	opt := newIssueListOptions(lastUpdate)
 
-	cfg := config.GetExecutionConfig(ctx)
-	client := gh.NewClient(nil).WithAuthToken(cfg.GitHubToken)
+	accounts := config.GetGitHubAccountsContext(ctx)
+	baseClient := gh.NewClient(nil)
 	var nextURL string
 	for page := 1; ; page++ {
 		var (
@@ -181,22 +181,20 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 			resp   *gh.Response
 		)
 		err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-			permit, acquireErr := githubapi.Acquire(ctx, "core")
-			if acquireErr != nil {
-				return acquireErr
-			}
-			var apiErr error
-			if nextURL == "" {
-				issues, resp, apiErr = client.Issues.ListByRepo(ctx, r.Owner, r.Name, opt)
-			} else {
-				var req *http.Request
-				req, apiErr = client.NewRequest(http.MethodGet, nextURL, nil)
-				if apiErr == nil {
-					resp, apiErr = client.Do(ctx, req, &issues)
+			return githubapi.Do(ctx, "core", accounts, func(token string) (githubapi.Observation, error) {
+				client := githubapi.NewREST(baseClient, token)
+				var apiErr error
+				if nextURL == "" {
+					issues, resp, apiErr = client.Issues.ListByRepo(ctx, r.Owner, r.Name, opt)
+				} else {
+					var req *http.Request
+					req, apiErr = client.NewRequest(http.MethodGet, nextURL, nil)
+					if apiErr == nil {
+						resp, apiErr = client.Do(ctx, req, &issues)
+					}
 				}
-			}
-			permit.Done(githubapi.ObserveREST(resp, apiErr))
-			return apiErr
+				return githubapi.ObserveREST(resp, apiErr), apiErr
+			})
 		})
 		if err != nil {
 			ui.Errorf("Error fetching issues, %s", err)
@@ -221,14 +219,12 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 					resp     *gh.Response
 				)
 				err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-					permit, acquireErr := githubapi.Acquire(ctx, "core")
-					if acquireErr != nil {
-						return acquireErr
-					}
-					var apiErr error
-					comments, resp, apiErr = client.Issues.ListComments(ctx, r.Owner, r.Name, issue.GetNumber(), commentsOpt)
-					permit.Done(githubapi.ObserveREST(resp, apiErr))
-					return apiErr
+					return githubapi.Do(ctx, "core", accounts, func(token string) (githubapi.Observation, error) {
+						client := githubapi.NewREST(baseClient, token)
+						var apiErr error
+						comments, resp, apiErr = client.Issues.ListComments(ctx, r.Owner, r.Name, issue.GetNumber(), commentsOpt)
+						return githubapi.ObserveREST(resp, apiErr), apiErr
+					})
 				})
 				if err != nil {
 					ui.Errorf("Error fetching comments of issue %d, %s", issue.GetNumber(), err)
