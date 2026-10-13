@@ -24,7 +24,7 @@ Git Retrieve(gitrieve) is a tool to archive repositories from any Git servers.
 - Archive repositories from any Git servers
 - Archive repositories of a user/an organization (see [Configuration](https://github.com/wnarutou/gitrieve/wiki/Configuration#repository))
 - Cron support
-- Multiple storage types (see [Storage](#storage))
+- Local file storage (see [Storage](#storage))
 - **Deletion-safe sync** — local cached code and full history are never deleted by a sync, even when the upstream repo is taken down, DMCA-disabled, deleted, or replaced with a single README (see [Deletion-safe sync](#deletion-safe-sync))
 - Docker support (see [Run as docker container](#run-as-docker-container))
 
@@ -47,7 +47,6 @@ repository:
     cron: "0 * * * *"
     storage:
       - localFile
-      - backblaze
     useCache: True
     allBranches: True
     depth: 0
@@ -60,13 +59,6 @@ storage:
   - name: localFile
     type: file
     path: ./repo
-  - name: backblaze
-    type: s3
-    endpoint: s3.us-west-000.backblazeb2.com
-    region: us-west-000
-    bucket: your-bucket-name
-    accessKeyID: your-access-key-id
-    secretAccessKey: your-secret-access-key
 ```
 
 Then you can run gitrieve with the configuration file.
@@ -123,6 +115,14 @@ gitrieve server
 ```
 
 From the UI you can trigger archive jobs, view real-time logs, and edit repository/storage configuration without touching `config.yaml` by hand. Repository cron schedules are refreshed immediately after repository edits, config imports, and config reloads. The server is configured via an optional `server` section in `config.yaml` (host, port, and optional bearer-token auth).
+
+Execution logs are cleaned in the background at startup and every 24 hours.
+Set `server.logRetentionMonths` to the number of calendar months to retain
+(default: `2`; non-positive values use the default). Cleanup removes all logs
+belonging to terminal jobs whose **end time** precedes the cutoff. Active jobs,
+jobs without an end time, and jobs ending exactly at the cutoff retain their
+logs. Job history and component outcomes remain available. Restart or reload
+configuration after changing the setting; the next cleanup pass uses the new value.
 
 The Repositories page provides server-side health counts, failed/never/overdue/
 stuck filters, attention-first sorting, component detail, and safe bulk retry.
@@ -181,10 +181,9 @@ For more details, see [Configuration](https://github.com/wnarutou/gitrieve/wiki/
 
 ## Storage
 
-gitrieve supports multiple storage types.
+gitrieve currently supports local file storage only. S3-compatible storage is no longer supported; existing configurations with `type: s3` must be changed to `type: file` with a local `path` before starting, reloading, or importing configuration.
 
 - [x] File
-- [x] AWS S3
 
 ## Deletion-safe sync
 
@@ -202,7 +201,7 @@ Recommended configuration for maximum recoverability:
 - `allBranches: true` — ensures every branch's commits are pulled into the local object store.
 - `useCache: true` — keeps the local cache directory (with its `.git`) across syncs as an extra on-disk safety net (without it the working dir is removed at the end of each sync).
 
-One caveat to be aware of: archiving writes to a fixed filename (e.g. `repo.tar.gz`) and overwrites any previous archive at the same path. So if an upstream is still reachable but its default branch has been rewritten to a single README, the *new* snapshot will replace the previous normal one at that path. Local cached code and history are still safe (see above), but to preserve distinct historical snapshots you should enable versioning on your object storage (S3/B2) or otherwise keep archives under versioned paths.
+One caveat to be aware of: archiving writes to a fixed filename (e.g. `repo.tar.gz`) and overwrites any previous archive at the same path. So if an upstream is still reachable but its default branch has been rewritten to a single README, the *new* snapshot will replace the previous normal one at that path. Local cached code and history are still safe (see above), but to preserve distinct historical snapshots you should keep separate copies of archives under versioned paths.
 
 ## Run as docker container
 

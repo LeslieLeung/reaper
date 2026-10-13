@@ -43,10 +43,11 @@ func TestPoolIssueAndCommentPagination(t *testing.T) {
 					return
 				}
 				if r.URL.Query().Get("page") == "2" {
+					require.Equal(t, "next-cursor", r.URL.Query().Get("before"), "account selection must preserve the full pagination link")
 					fmt.Fprint(w, `[]`)
 					return
 				}
-				w.Header().Set("Link", `<https://api.github.com/repos/pool-issue/repo/issues?page=2>; rel="next"`)
+				w.Header().Set("Link", `<https://api.github.com/repos/pool-issue/repo/issues?page=2&before=next-cursor>; rel="next"`)
 				fmt.Fprint(w, `[{"number":1,"title":"hello","updated_at":"2026-10-12T00:00:00Z"}]`)
 			})
 			cache := filepath.Join(".gitrieve", "github.com", "pool-issue", "repo")

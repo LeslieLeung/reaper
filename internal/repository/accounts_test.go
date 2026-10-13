@@ -2,7 +2,9 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -35,6 +37,12 @@ type accountGitRequests struct {
 }
 
 type accountGitHTTPTransport struct{ base http.RoundTripper }
+
+type accountGitRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f accountGitRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func (t accountGitHTTPTransport) RoundTrip(request *http.Request) (*http.Response, error) {
 	response, err := t.base.RoundTrip(request)
@@ -445,5 +453,51 @@ func TestGitAccountRedirectWithinHTTPSGitHubKeepsCredential(t *testing.T) {
 	require.GreaterOrEqual(t, len(captured), 3, "redirect and subsequent pack request must both complete")
 	for _, token := range captured {
 		require.Equal(t, tokens[0], token)
+	}
+}
+
+func TestGitAccountEOFKeepsCredentialBeforePermissionFallback(t *testing.T) {
+	ctx, tokens := githubapitest.Context(t)
+	_, _ = serveAccountGit(t, func(token string, _ *http.Request) int {
+		if token == tokens[0] {
+			return http.StatusUnauthorized
+		}
+		return 0
+	})
+	base := http.DefaultTransport
+	var captured []string
+	http.DefaultTransport = accountGitRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		_, token, _ := request.BasicAuth()
+		captured = append(captured, token)
+		if len(captured) == 1 {
+			return nil, io.ErrUnexpectedEOF
+		}
+		return base.RoundTrip(request)
+	})
+	repo, directory := accountGitRepo(t)
+	require.NoError(t, Sync(ctx, repo, false, nil))
+	require.GreaterOrEqual(t, len(captured), 4)
+	require.Equal(t, []string{tokens[0], tokens[0], tokens[1]}, captured[:3])
+	for _, token := range captured[3:] {
+		require.Equal(t, tokens[1], token)
+	}
+	content, err := os.ReadFile(filepath.Join(directory, "content.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "first version", string(content))
+}
+
+func TestGitAccountLocalRecoveryFailureStopsFallback(t *testing.T) {
+	for _, failure := range []error{errCloneCleanup, errPackCleanup, errManagedIndexRecovery, errManagedWorktreeRecovery} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			accounts := &gitAccounts{tokens: []string{"first", "second"}}
+			calls := 0
+			joined := errors.Join(transport.ErrAuthenticationRequired, failure)
+			err := accounts.do(context.Background(), func(transport.AuthMethod) error {
+				calls++
+				return joined
+			})
+			require.ErrorIs(t, err, failure)
+			require.Equal(t, 1, calls, "unsafe local recovery must stop before the next credential")
+		})
 	}
 }

@@ -187,33 +187,24 @@ func DownloadAllAssets(ctx context.Context, repo typedef.Repository, storages []
 		return ctx.Err()
 	}
 	for _, s := range storages {
+		if s.Type == storage.FileStorage {
+			root, err := filepath.Abs(filepath.Join(s.Path, r.Host, r.Owner, r.Name, "release"))
+			if err != nil {
+				return err
+			}
+			if err := cleanupFileReleases(ctx, root, reserveTagName); err != nil {
+				return err
+			}
+			continue
+		}
 		backend, err := storage.GetStorage(s)
 		if err != nil {
 			return err
 		}
 
-		var objectMetaInfo []storage.ObjectMetaInfo
-		if s.Type == storage.FileStorage {
-			if filepath.IsAbs(s.Path) {
-				objectMetaInfo, err = backend.ListObjectMetaInfo(path.Join(s.Path, r.Host, r.Owner, r.Name, "release"))
-				if err != nil {
-					continue
-				}
-			} else {
-				currentDir, err := os.Getwd()
-				if err != nil {
-					return err
-				}
-				objectMetaInfo, err = backend.ListObjectMetaInfo(path.Join(currentDir, s.Path, r.Host, r.Owner, r.Name, "release"))
-				if err != nil {
-					continue
-				}
-			}
-		} else {
-			objectMetaInfo, err = backend.ListObjectMetaInfo(path.Join(s.Path, r.Host, r.Owner, r.Name, "release"))
-			if err != nil {
-				continue
-			}
+		objectMetaInfo, err := backend.ListObjectMetaInfo(path.Join(s.Path, r.Host, r.Owner, r.Name, "release"))
+		if err != nil {
+			continue
 		}
 
 		for _, dirInfo := range objectMetaInfo {

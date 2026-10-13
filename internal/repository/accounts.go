@@ -74,7 +74,11 @@ func (a *gitAccounts) do(ctx context.Context, operation func(transport.AuthMetho
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if !gitAccountError(err) {
+		// A joined permission error cannot make retrying safe when a local
+		// packfile, clone directory, or managed worktree failed to recover.
+		if errors.Is(err, errCloneCleanup) || errors.Is(err, errPackCleanup) ||
+			errors.Is(err, errManagedIndexRecovery) || errors.Is(err, errManagedWorktreeRecovery) ||
+			!gitAccountError(err) {
 			return err
 		}
 		if firstErr == nil {

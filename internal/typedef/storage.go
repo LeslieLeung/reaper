@@ -1,5 +1,7 @@
 package typedef
 
+import "fmt"
+
 type Storage struct {
 	Name string `yaml:"name"`
 	Type string `yaml:"type"`
@@ -7,10 +9,13 @@ type Storage struct {
 }
 
 type MultiStorage struct {
-	Storage         `yaml:",inline" mapstructure:",squash"`
-	Endpoint        string `yaml:"endpoint"`
-	Bucket          string `yaml:"bucket"`
-	Region          string `yaml:"region"`
-	AccessKeyID     string `yaml:"accessKeyID"`
-	SecretAccessKey string `yaml:"secretAccessKey"`
+	Storage `yaml:",inline" mapstructure:",squash"`
+}
+
+// ValidateType rejects unsupported backends before a configuration is applied.
+func (s Storage) ValidateType() error {
+	if s.Type != "file" {
+		return fmt.Errorf("storage %q has unsupported type %q: only 'file' storage is supported", s.Name, s.Type)
+	}
+	return nil
 }

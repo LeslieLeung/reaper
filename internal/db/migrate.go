@@ -15,7 +15,7 @@ func Migrate(d *DB) error {
 			return fmt.Errorf("add executions.repo_key: %w", err)
 		}
 	}
-	if _, err := d.Exec(componentSchema + executionIndexSchema); err != nil {
+	if _, err := d.Exec(componentSchema + executionIndexSchema + logRetentionIndexSchema); err != nil {
 		return fmt.Errorf("add component execution schema: %w", err)
 	}
 	return nil
