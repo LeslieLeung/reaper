@@ -64,7 +64,7 @@ func (a *gitAccounts) do(ctx context.Context, operation func(transport.AuthMetho
 		index := (a.preferred + offset) % len(a.tokens)
 		var auth transport.AuthMethod
 		if token := a.tokens[index]; token != "" {
-			auth = &githttp.BasicAuth{Username: "x-access-token", Password: token}
+			auth = &githubGitAuth{BasicAuth: &githttp.BasicAuth{Username: "x-access-token", Password: token}}
 		}
 		err := operation(auth)
 		if err == nil || errors.Is(err, git.NoErrAlreadyUpToDate) {

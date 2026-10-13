@@ -34,6 +34,17 @@ type accountGitRequests struct {
 	tokens []string
 }
 
+type accountGitHTTPTransport struct{ base http.RoundTripper }
+
+func (t accountGitHTTPTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response, err := t.base.RoundTrip(request)
+	if response != nil {
+		// Local routing changes the dial target, not the logical URL Git sees.
+		response.Request = request
+	}
+	return response, err
+}
+
 func (r *accountGitRequests) snapshot() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -56,6 +67,9 @@ func serveAccountGit(t *testing.T, status func(string, *http.Request) int) (*git
 		code := status(token, r)
 		seen.mu.Unlock()
 		if code != 0 {
+			if target := r.Header.Get("X-Fixture-Redirect"); target != "" {
+				w.Header().Set("Location", target)
+			}
 			http.Error(w, "repository access denied", code)
 			return
 		}
@@ -108,7 +122,8 @@ func serveAccountGit(t *testing.T, status func(string, *http.Request) int) (*git
 	// go-git captures DefaultTransport at package initialization, so replacing
 	// net/http's default alone does not intercept its requests.
 	original := gitclient.Protocols["https"]
-	gitclient.InstallProtocol("https", githttp.NewClient(&http.Client{Transport: http.DefaultTransport}))
+	http.DefaultTransport = accountGitHTTPTransport{base: http.DefaultTransport}
+	gitclient.InstallProtocol("https", &githubGitTransport{base: githttp.NewClient(&http.Client{Transport: http.DefaultTransport})})
 	t.Cleanup(func() { gitclient.InstallProtocol("https", original) })
 	return upstream, seen
 }
@@ -391,5 +406,44 @@ func TestGitAccountCachedRemoteOtherHostReceivesNoCredential(t *testing.T) {
 	require.NotEmpty(t, seen.snapshot())
 	for _, token := range seen.snapshot() {
 		require.Empty(t, token, "cached origin URL must also constrain credential use")
+	}
+}
+
+func TestGitAccountRedirectCannotSendCredentialOutsideHTTPSGitHub(t *testing.T) {
+	for _, target := range []string{"https://gitlab.com", "http://github.com"} {
+		t.Run(strings.NewReplacer("/", "-", ":", "-").Replace(target), func(t *testing.T) {
+			ctx, tokens := githubapitest.Context(t)
+			_, seen := serveAccountGit(t, func(_ string, request *http.Request) int {
+				if !strings.HasPrefix(request.URL.Path, "/redirected/") {
+					request.Header.Set("X-Fixture-Redirect", target+"/redirected/source/info/refs?service=git-upload-pack")
+					return 302
+				}
+				return 0
+			})
+			repo, _ := accountGitRepo(t)
+			require.ErrorIs(t, Sync(ctx, repo, false, nil), transport.ErrAuthorizationFailed)
+			require.Equal(t, []string{tokens[0], tokens[1]}, seen.snapshot(), "only the two trusted initial requests may reach the server")
+		})
+	}
+}
+
+func TestGitAccountRedirectWithinHTTPSGitHubKeepsCredential(t *testing.T) {
+	ctx, tokens := githubapitest.Context(t)
+	_, seen := serveAccountGit(t, func(_ string, request *http.Request) int {
+		if !strings.HasPrefix(request.URL.Path, "/redirected/") {
+			request.Header.Set("X-Fixture-Redirect", "https://github.com/redirected/source/info/refs?service=git-upload-pack")
+			return 302
+		}
+		return 0
+	})
+	repo, directory := accountGitRepo(t)
+	require.NoError(t, Sync(ctx, repo, false, nil))
+	content, err := os.ReadFile(filepath.Join(directory, "content.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "first version", string(content))
+	captured := seen.snapshot()
+	require.GreaterOrEqual(t, len(captured), 3, "redirect and subsequent pack request must both complete")
+	for _, token := range captured {
+		require.Equal(t, tokens[0], token)
 	}
 }
