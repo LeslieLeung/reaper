@@ -15,17 +15,27 @@ type githubGitAuth struct{ *githttp.BasicAuth }
 
 func init() {
 	// Register once before concurrent syncs, never while operations are running.
-	gitclient.InstallProtocol("https", &githubGitTransport{base: gitclient.Protocols["https"]})
+	idleClient := newGitHTTPClient(gitNetworkIdleTimeout)
+	base := githttp.NewClient(idleClient)
+	gitclient.InstallProtocol("http", base)
+	gitclient.InstallProtocol("https", &githubGitTransport{base: base, httpBase: idleClient.Transport})
 }
 
-type githubGitTransport struct{ base transport.Transport }
+type githubGitTransport struct {
+	base     transport.Transport
+	httpBase http.RoundTripper
+}
 
 func (t *githubGitTransport) client(auth transport.AuthMethod) transport.Transport {
 	if _, ok := auth.(*githubGitAuth); !ok {
 		return t.base
 	}
+	base := t.httpBase
+	if base == nil {
+		base = http.DefaultTransport
+	}
 	return githttp.NewClient(&http.Client{
-		Transport: githubCredentialTransport{base: http.DefaultTransport},
+		Transport: githubCredentialTransport{base: base},
 	})
 }
 

@@ -109,8 +109,8 @@ func appendConcreteRepositories(ret []typedef.Repository, configured typedef.Rep
 }
 
 // Sync archives a repository's code (or wiki when iswiki is set). ctx bounds
-// every go-git network operation: a caller cancellation (e.g. a user cancelling
-// a job) or the internal one-hour timeout fails the sync instead of hanging.
+// every go-git network operation. Caller cancellation interrupts a job, while
+// the Git HTTP transport detects stalled reads without limiting total duration.
 func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []typedef.MultiStorage) error {
 	useCache := repo.UseCache
 	depth := repo.Depth
@@ -180,11 +180,11 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 		exist = true
 	}
 	var gitRepo *git.Repository
-	// Bound every go-git network operation (clone, fetch, remote list, pull).
-	// Derive from the caller's ctx so a job cancellation also interrupts them,
-	// and apply a one-hour total timeout shared by all sync operations.
-	syncCtx, cancel := context.WithTimeout(ctx, time.Hour)
-	defer cancel()
+	// Keep caller cancellation across clone, fetch, remote list, and pull.
+	// Network idle detection lives in the HTTP transport, so active transfers
+	// and local processing are not bounded by a fixed total timeout.
+	syncCtx := ctx
+	ui.Printf("Git network idle timeout: %s", gitNetworkIdleTimeout)
 	if deadline, ok := syncCtx.Deadline(); ok {
 		ui.Printf("Sync deadline: %s", deadline.UTC().Format(time.RFC3339))
 	}
@@ -448,8 +448,8 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 				if isGitEOF(err) || errors.Is(err, errPackCleanup) || errors.Is(err, git.ErrUnstagedChanges) || errors.Is(err, errManagedIndexRecovery) {
 					return err
 				}
-				if syncCtx.Err() != nil || gitAccountError(err) {
-					// Cancelled — stop the whole sync instead of continuing to
+				if syncCtx.Err() != nil || gitAccountError(err) || isGitIdleTimeout(err) {
+					// Cancelled or stalled — stop the whole sync instead of continuing to
 					// remaining branches. Exhausted authentication candidates
 					// must also fail the job, preserving the existing local cache.
 					return err
