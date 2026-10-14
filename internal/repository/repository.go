@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"time"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/config"
@@ -105,8 +104,8 @@ func appendConcreteRepositories(ret []typedef.Repository, configured typedef.Rep
 }
 
 // Sync archives a repository's code (or wiki when iswiki is set). ctx bounds
-// every go-git network operation: a caller cancellation (e.g. a user cancelling
-// a job) or the internal 30-minute timeout fails the sync instead of hanging.
+// every go-git network operation. Caller cancellation interrupts a job, while
+// the Git HTTP transport detects stalled reads without limiting total duration.
 func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []typedef.MultiStorage) error {
 	useCache := repo.UseCache
 	depth := repo.Depth
@@ -176,12 +175,10 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 		exist = true
 	}
 	var gitRepo *git.Repository
-	// Bound every go-git network operation (clone, fetch, remote list, pull).
-	// Derive from the caller's ctx so a job cancellation also interrupts them,
-	// and apply a 30-minute stall-detection timeout on top (generous; not a cap
-	// on legitimate large clones).
-	syncCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
+	// Keep caller cancellation across clone, fetch, remote list, and pull.
+	// Network idle detection lives in the HTTP transport, so active transfers
+	// and local processing are not bounded by a fixed total timeout.
+	syncCtx := ctx
 
 	// Route git's own progress (server-side "Enumerating/Counting/Compressing
 	// objects" lines) into the log sink so a long clone/fetch streams live
@@ -352,8 +349,8 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 				ui.Printf("local branch %s already up to date. \n", localBranchName)
 			} else if err != nil {
 				ui.Errorf("Error pulling local branch %s, %s", localBranchName, err)
-				if syncCtx.Err() != nil {
-					// Cancelled — stop the whole sync instead of continuing to
+				if syncCtx.Err() != nil || isGitIdleTimeout(err) {
+					// Cancelled or stalled — stop the whole sync instead of continuing to
 					// the remaining branches. The fetched objects stay in the
 					// local cache and are picked up on the next run.
 					return err

@@ -81,6 +81,12 @@ gitrieve
 
 `repository` archives a single repository defined in configuration.
 
+Git clone, fetch, pull, and remote-reference queries have no fixed total time
+limit. A network read fails only after five minutes without receiving any
+bytes; incoming data renews that window even without progress messages.
+Local decoding, checkout, and archiving are not subject to this network timeout.
+Cancelling a job still interrupts its network operations.
+
 ```bash
 gitrieve repository gitrieve
 ```
