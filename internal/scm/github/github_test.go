@@ -98,7 +98,13 @@ func TestGetReposContextRetriesFromSnapshotAndObservesREST(t *testing.T) {
 	t.Cleanup(func() { config.SetIns(previousConfig) })
 
 	var calls int
-	reset := time.Now().Add(time.Second).Unix()
+	// Use a per-test resource so the process-wide coordinator's deliberately
+	// persistent quota state cannot leak between repeated test runs. Leave a
+	// generous reset window because GitHub reset timestamps have one-second
+	// precision and Unix truncation can otherwise make a one-second pause expire
+	// before the assertion acquires it.
+	resource := fmt.Sprintf("test-core-%d", time.Now().UnixNano())
+	reset := time.Now().Add(time.Minute).Unix()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		w.Header().Set("Content-Type", "application/json")
@@ -107,7 +113,7 @@ func TestGetReposContextRetriesFromSnapshotAndObservesREST(t *testing.T) {
 			_, _ = w.Write([]byte(`{"message":"temporary"}`))
 			return
 		}
-		w.Header().Set("X-RateLimit-Resource", "core")
+		w.Header().Set("X-RateLimit-Resource", resource)
 		w.Header().Set("X-RateLimit-Limit", "5000")
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.Header().Set("X-RateLimit-Reset", fmt.Sprintf("%d", reset))
@@ -134,7 +140,7 @@ func TestGetReposContextRetriesFromSnapshotAndObservesREST(t *testing.T) {
 	permit.Done(githubapi.Observation{})
 	coreCtx, coreCancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 	defer coreCancel()
-	permit, err = githubapi.Acquire(coreCtx, "core")
+	permit, err = githubapi.Acquire(coreCtx, resource)
 	if permit != nil {
 		permit.Done(githubapi.Observation{})
 	}

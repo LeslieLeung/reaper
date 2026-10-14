@@ -776,7 +776,7 @@ func validRepositoryHealth(health string) bool {
 
 func validRepositorySort(sortKey string) bool {
 	switch sortKey {
-	case "attention", "name", "last_attempt", "last_success":
+	case "attention", "name", "last_attempt", "last_success", "next_run":
 		return true
 	default:
 		return false
@@ -1057,10 +1057,10 @@ func (a *API) CreateStorage(c *gin.Context) {
 	}
 
 	// Validate type
-	if storage.Type != "file" && storage.Type != "s3" {
+	if err := storage.ValidateType(); err != nil {
 		c.JSON(http.StatusBadRequest, Response{
 			Code:    400,
-			Message: "Storage type must be 'file' or 's3'",
+			Message: err.Error(),
 		})
 		return
 	}
@@ -1161,6 +1161,13 @@ func (a *API) UpdateStorage(c *gin.Context) {
 		return
 	}
 
+	if err := updated.ValidateType(); err != nil {
+		c.JSON(http.StatusBadRequest, Response{
+			Code:    400,
+			Message: err.Error(),
+		})
+		return
+	}
 	next.Storage[idx] = updated
 	_, msg := a.publishPersistAndRefreshConfigLocked(next, "Storage updated in memory but failed to persist config: ")
 

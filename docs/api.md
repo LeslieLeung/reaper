@@ -728,7 +728,7 @@ curl http://localhost:8080/api/storage
 POST /api/storage
 ```
 
-**Request body** — a storage object. `name` is required and `type` must be `file` or `s3`.
+**Request body** — a storage object. `name` is required and `type` must be `file`.
 
 For a file backend:
 
@@ -737,20 +737,6 @@ For a file backend:
   "name": "localFile",
   "type": "file",
   "path": "./repo"
-}
-```
-
-For an S3 backend:
-
-```json
-{
-  "name": "backblaze",
-  "type": "s3",
-  "endpoint": "s3.us-west-000.backblazeb2.com",
-  "region": "us-west-000",
-  "bucket": "your-bucket-name",
-  "accessKeyID": "your-access-key-id",
-  "secretAccessKey": "your-secret-access-key"
 }
 ```
 
@@ -788,7 +774,7 @@ PUT /api/storage/:id
 |---|---|
 | `id` | Storage `name` |
 
-**Request body** — any subset of storage fields.
+**Request body** — any subset of storage fields. If supplied, `type` must be `file`.
 
 ```json
 {
@@ -811,7 +797,7 @@ curl -X PUT http://localhost:8080/api/storage/localFile \
 | Code | Meaning |
 |---|---|
 | 200 | Storage updated |
-| 400 | Invalid body |
+| 400 | Invalid body or unsupported storage type |
 | 404 | Storage not found |
 | 500 | Failed to merge fields |
 
@@ -904,7 +890,7 @@ load/save, export/import, apply, and reload.
 
 Returns the full current configuration as YAML — `repository`, `storage`, all
 global options, and the `server:` section — formatted so the output can be used
-directly as `config.yaml`. Secrets (`githubToken`, `secretAccessKey`,
+directly as `config.yaml`. Secrets (`githubToken`,
 `authToken`) are exported in plaintext; treat the file accordingly.
 
 | Method | Path | Description |

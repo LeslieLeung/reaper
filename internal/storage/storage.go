@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"errors"
 	"time"
 
 	"github.com/wnarutou/gitrieve/internal/typedef"
@@ -9,7 +8,6 @@ import (
 
 const (
 	FileStorage = "file"
-	S3Storage   = "s3"
 )
 
 type ObjectMetaInfo struct {
@@ -36,17 +34,8 @@ type Storage interface {
 }
 
 func GetStorage(storage typedef.MultiStorage) (Storage, error) {
-	var (
-		backend Storage
-		err     error
-	)
-	switch storage.Type {
-	case FileStorage:
-		backend = &File{}
-	case S3Storage:
-		backend, err = New(storage.Endpoint, storage.Bucket, storage.Region, storage.AccessKeyID, storage.SecretAccessKey)
-	default:
-		err = errors.New("unknown storage type")
+	if err := storage.ValidateType(); err != nil {
+		return nil, err
 	}
-	return backend, err
+	return &File{}, nil
 }

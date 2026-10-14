@@ -14,6 +14,7 @@ import (
 
 type Config struct {
 	Concurrency           uint
+	AccountConcurrency    uint
 	MinRequestInterval    time.Duration
 	LowRemainingThreshold int
 }
@@ -33,14 +34,17 @@ type coordinator struct {
 	mu             sync.Mutex
 	active         uint
 	changed        chan struct{}
-	nextStart      time.Time
-	resourcePause  map[string]time.Time
+	credentials    map[string]*credentialState
+	selection      uint64
 	secondaryPause time.Time
 }
 
 type permit struct {
-	c    *coordinator
-	once sync.Once
+	c          *coordinator
+	once       sync.Once
+	token      string
+	credential *credentialState
+	resource   string
 }
 
 type scopeContextKey struct{}
@@ -89,15 +93,18 @@ var publicationReadBoundaryHookForTest atomic.Pointer[publicationReadBoundaryTes
 
 func newCoordinator(cfg Config) *coordinator {
 	return &coordinator{
-		cfg:           normalizedConfig(cfg),
-		changed:       make(chan struct{}),
-		resourcePause: make(map[string]time.Time),
+		cfg:         normalizedConfig(cfg),
+		changed:     make(chan struct{}),
+		credentials: make(map[string]*credentialState),
 	}
 }
 
 func normalizedConfig(cfg Config) Config {
 	if cfg.Concurrency == 0 {
 		cfg.Concurrency = 1
+	}
+	if cfg.AccountConcurrency == 0 {
+		cfg.AccountConcurrency = 2
 	}
 	return cfg
 }
@@ -181,87 +188,28 @@ func loadCoordinator() *coordinator {
 }
 
 func (c *coordinator) acquire(ctx context.Context, resource string) (Permit, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	for {
-		c.mu.Lock()
-		now := time.Now()
-		resumed := false
-		if !c.secondaryPause.IsZero() && !c.secondaryPause.After(now) {
-			c.secondaryPause = time.Time{}
-			resumed = true
-		}
-		if r, ok := c.resourcePause[resource]; ok && !r.After(now) {
-			delete(c.resourcePause, resource)
-			resumed = true
-		}
-		until := c.secondaryPause
-		if r := c.resourcePause[resource]; r.After(until) {
-			until = r
-		}
-		if c.nextStart.After(until) {
-			until = c.nextStart
-		}
-		if c.active < c.cfg.Concurrency && !until.After(now) {
-			c.active++
-			c.nextStart = now.Add(c.cfg.MinRequestInterval)
-			c.mu.Unlock()
-			if resumed {
-				ui.Printf("GitHub API traffic resumed for %s", resource)
-			}
-			return &permit{c: c}, nil
-		}
-		changed := c.changed
-		hasDeadline := c.active < c.cfg.Concurrency && until.After(now)
-		wait := time.Duration(0)
-		if hasDeadline {
-			wait = until.Sub(now)
-		}
-		c.mu.Unlock()
-		if !hasDeadline {
-			select {
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			case <-changed:
-			}
-			continue
-		}
-		timer := time.NewTimer(wait)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return nil, ctx.Err()
-		case <-changed:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-		case <-timer.C:
-		}
-	}
+	return c.acquireAccount(ctx, resource, nil, nil)
 }
 
 func (p *permit) Done(obs Observation) {
 	p.once.Do(func() {
-		p.c.observe(obs)
+		if obs.Resource == "" && !obs.Reset.IsZero() {
+			obs.Resource = p.resource
+		}
+		p.c.observeCredential(p.credential, obs)
 		p.c.mu.Lock()
 		if p.c.active > 0 {
 			p.c.active--
+		}
+		if p.credential.active > 0 {
+			p.credential.active--
 		}
 		p.c.signalLocked()
 		p.c.mu.Unlock()
 	})
 }
 
-func (c *coordinator) observe(obs Observation) {
+func (c *coordinator) observeCredential(credential *credentialState, obs Observation) {
 	c.mu.Lock()
 	now := time.Now()
 	secondaryExtended := false
@@ -278,8 +226,8 @@ func (c *coordinator) observe(obs Observation) {
 			secondaryExtended = true
 		}
 	}
-	if obs.Resource != "" && !obs.Reset.IsZero() && obs.Remaining <= c.cfg.LowRemainingThreshold && obs.Reset.After(c.resourcePause[obs.Resource]) {
-		c.resourcePause[obs.Resource] = obs.Reset
+	if obs.Resource != "" && !obs.Reset.IsZero() && obs.Remaining <= c.cfg.LowRemainingThreshold && obs.Reset.After(credential.resourcePause[obs.Resource]) {
+		credential.resourcePause[obs.Resource] = obs.Reset
 		resourceExtended = true
 	}
 	if secondaryExtended || resourceExtended {

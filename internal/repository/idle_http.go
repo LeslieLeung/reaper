@@ -9,22 +9,11 @@ import (
 	"net/http"
 	"strings"
 	"time"
-
-	"github.com/go-git/go-git/v5/plumbing/transport/client"
-	gitHTTP "github.com/go-git/go-git/v5/plumbing/transport/http"
 )
 
 const gitNetworkIdleTimeout = 5 * time.Minute
 
 var errGitIdleTimeout = errors.New("git network idle timeout")
-
-func init() {
-	// go-git selects transports from a process-wide registry. Install once at
-	// startup, before any concurrent syncs, and leave other HTTP clients alone.
-	gitClient := gitHTTP.NewClient(newGitHTTPClient(gitNetworkIdleTimeout))
-	client.InstallProtocol("http", gitClient)
-	client.InstallProtocol("https", gitClient)
-}
 
 func newGitHTTPClient(idleTimeout time.Duration) *http.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()

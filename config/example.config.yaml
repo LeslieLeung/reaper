@@ -4,7 +4,6 @@ repository:
     cron: "0 * * * *"
     storage:
       - localFile
-      - backblaze
     useCache: True
     allBranches: True
     depth: 0
@@ -54,22 +53,25 @@ storage:
   - name: localFile
     type: file
     path: ./repo
-  - name: backblaze
-    type: s3
-    endpoint: s3.us-west-000.backblazeb2.com
-    region: us-west-000
-    bucket: your-bucket-name
-    accessKeyID: your-access-key-id
-    secretAccessKey: your-secret-access-key
 
 githubToken: xxx
-githubApiConcurrency: 2
+# Optional pool: use tokens belonging to two different GitHub users. A nonempty
+# pool takes precedence over githubToken. Leave it empty to use the legacy token.
+# GitHub HTTPS clone/fetch/pull also use this pool, rotating on 401/403/404.
+# Private code repositories need tokens with code-read permission.
+githubAccounts:
+  - name: alice
+    token: alice-personal-access-token
+  - name: bob
+    token: bob-personal-access-token
+githubApiConcurrency: 4
+githubAccountConcurrency: 2
 githubMinRequestInterval: 200ms
 githubLowRemainingThreshold: 100
 githubScheduleJitter: 30s
 syncOverdueGrace: 30m
 syncStuckThreshold: 24h
-cocurrencyNum: 6
+cocurrencyNum: 12
 releaseSizeLimit: 300000000
 releaseNumLimit: 3
 

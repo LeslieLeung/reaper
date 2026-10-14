@@ -1,7 +1,10 @@
 package config
 
 import (
+	"context"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -10,6 +13,156 @@ import (
 	"github.com/wnarutou/gitrieve/internal/typedef"
 	"gopkg.in/yaml.v3"
 )
+
+// Decoder type errors must not render secret-bearing values before validation.
+func TestAccountPoolMalformedShapesDoNotLeakSecrets(t *testing.T) {
+	for name, content := range map[string]string{
+		"token map":    "githubAccounts: [{name: alice, token: {value: ghp_sensitive-secret}}]",
+		"scalar entry": "githubAccounts: [ghp_sensitive-secret]",
+		"token list":   "githubAccounts: [{name: alice, token: [ghp_sensitive-secret]}]",
+		"scalar pool":  "githubAccounts: ghp_sensitive-secret",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseImport(content)
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "ghp_sen")
+			writeTmpConfig(t, accountPoolYAML)
+			require.NoError(t, os.WriteFile(Path, []byte(content), 0o644))
+			err = Reload()
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "ghp_sen")
+			require.Equal(t, "alice-secret", GetIns().GitHubAccounts[0].Token)
+		})
+	}
+}
+
+// Init exits on invalid input; exercise its actual diagnostic in a child process.
+func TestAccountPoolInitRejectsMalformedShapeWithoutLeaking(t *testing.T) {
+	if path := os.Getenv("GITRIEVE_TEST_MALFORMED_POOL_PATH"); path != "" {
+		Path = path
+		Init()
+		return
+	}
+	for _, content := range []string{
+		"githubAccounts: [{name: alice, token: {value: ghp_sensitive-secret}}]",
+		"githubAccounts: [ghp_sensitive-secret]",
+	} {
+		path := filepath.Join(t.TempDir(), "config.yaml")
+		require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+		cmd := exec.Command(os.Args[0], "-test.run=^TestAccountPoolInitRejectsMalformedShapeWithoutLeaking$")
+		cmd.Env = append(os.Environ(), "GITRIEVE_TEST_MALFORMED_POOL_PATH="+path)
+		output, err := cmd.CombinedOutput()
+		require.Error(t, err)
+		require.NotContains(t, string(output), "ghp_sen")
+		require.Contains(t, string(output), "githubAccounts")
+	}
+}
+
+const accountPoolYAML = `githubToken: legacy-secret
+githubAccounts:
+  - name: alice
+    token: alice-secret
+  - name: bob
+    token: bob-secret
+githubAccountConcurrency: 3
+`
+
+func requireAccountPoolDocument(t *testing.T, document string, concurrency int) {
+	t.Helper()
+	var decoded map[string]interface{}
+	require.NoError(t, yaml.Unmarshal([]byte(document), &decoded))
+	require.Equal(t, []interface{}{
+		map[string]interface{}{"name": "alice", "token": "alice-secret"},
+		map[string]interface{}{"name": "bob", "token": "bob-secret"},
+	}, decoded["githubAccounts"])
+	require.Equal(t, concurrency, decoded["githubAccountConcurrency"])
+}
+
+// Dropping pool fields from parsing/export or persistence loses credentials.
+func TestAccountPoolYAMLParseExportSaveReload(t *testing.T) {
+	doc, err := ParseImport(accountPoolYAML)
+	require.NoError(t, err)
+	parsed, err := yaml.Marshal(doc)
+	require.NoError(t, err)
+	requireAccountPoolDocument(t, string(parsed), 3)
+	writeTmpConfig(t, accountPoolYAML)
+	before := NewExecutionSnapshot(GetIns())
+	require.NoError(t, Save())
+	require.NoError(t, Reload())
+	exported, err := Export()
+	require.NoError(t, err)
+	requireAccountPoolDocument(t, exported, 3)
+	frozen, err := ExportFrom(GetExecutionConfig(WithExecutionSnapshot(context.Background(), before)))
+	require.NoError(t, err)
+	requireAccountPoolDocument(t, frozen, 3)
+	// Save changed credentials/caps, rather than merely retaining Viper's
+	// original file values, and verify reload reads the persisted replacement.
+	next := GetIns()
+	next.GitHubAccounts[0].Token = "replacement-secret"
+	next.GitHubAccountConcurrency = 4
+	require.NoError(t, SaveSnapshot(next))
+	require.NoError(t, Reload())
+	require.Equal(t, "replacement-secret", GetIns().GitHubAccounts[0].Token)
+	require.Equal(t, uint(4), GetIns().GitHubAccountConcurrency)
+	frozen, err = ExportFrom(GetExecutionConfig(WithExecutionSnapshot(context.Background(), before)))
+	require.NoError(t, err)
+	requireAccountPoolDocument(t, frozen, 3)
+}
+
+// Missing account validation would allow malformed credentials through imports.
+func TestAccountPoolValidationRejectsBlankAndDuplicateEntries(t *testing.T) {
+	for name, src := range map[string]string{
+		"blank name":     "githubAccounts: [{name: ' ', token: sensitive-token}]",
+		"blank token":    "githubAccounts: [{name: alice, token: ' '}]",
+		"duplicate name": "githubAccounts: [{name: alice, token: sensitive-token}, {name: alice, token: other-sensitive-token}]",
+	} {
+		t.Run(name, func(t *testing.T) {
+			doc, err := ParseImport(src)
+			require.NoError(t, err)
+			errs := ValidateImport(doc)
+			require.NotEmpty(t, errs)
+			for _, message := range errs {
+				require.NotContains(t, message, "sensitive-token")
+			}
+		})
+	}
+}
+
+// A reload must reject the same malformed account entries as import, retaining
+// the previously published generation and never including credentials in errors.
+func TestAccountPoolReloadRejectsMalformedCredentials(t *testing.T) {
+	writeTmpConfig(t, accountPoolYAML)
+	for _, content := range []string{
+		"githubAccounts: [{name: ' ', token: sensitive-token}]",
+		"githubAccounts: [{name: alice, token: ' '}]",
+		"githubAccounts: [{name: alice, token: sensitive-token}, {name: alice, token: other-sensitive-token}]",
+	} {
+		require.NoError(t, os.WriteFile(Path, []byte(content), 0o644))
+		err := Reload()
+		require.Error(t, err)
+		require.NotContains(t, err.Error(), "sensitive-token")
+		require.Equal(t, "alice-secret", GetIns().GitHubAccounts[0].Token)
+	}
+}
+
+func TestRejectUnsupportedStorageConfig(t *testing.T) {
+	for _, kind := range []string{"s3", "ftp", ""} {
+		t.Run(kind, func(t *testing.T) {
+			writeTmpConfig(t, "storage:\n  - name: local\n    type: file\n    path: ./repo\n")
+			before := GetIns()
+			content := "storage:\n  - name: remote\n    type: '" + kind + "'\n"
+			doc, err := ParseImport(content)
+			require.NoError(t, err)
+			errs := ValidateImport(doc)
+			require.NotEmpty(t, errs)
+			require.Contains(t, errs[0], "only 'file' storage is supported")
+			require.NoError(t, os.WriteFile(Path, []byte(content), 0o644))
+			err = Reload()
+			require.ErrorContains(t, err, "only 'file' storage is supported")
+			require.Equal(t, before, GetIns())
+		})
+	}
+}
 
 func TestDurationStringYAML(t *testing.T) {
 	// Marshal produces the Go string form, usable as config.yaml.
@@ -268,6 +421,7 @@ retryBaseDelay: "5s"
 server:
   host: 127.0.0.1
   port: "8081"
+  logRetentionMonths: 6
 `)
 	require.NoError(t, err)
 	require.Len(t, doc.Repository, 2)
@@ -283,6 +437,7 @@ server:
 	require.Equal(t, DurationString(DefaultSyncStuckThreshold), doc.SyncStuckThreshold)
 	require.Equal(t, "127.0.0.1", doc.Server.Host)
 	require.Equal(t, "8081", doc.Server.Port)
+	require.Equal(t, 6, doc.Server.LogRetentionMonths)
 }
 
 func TestParseImportSeedsDefaults(t *testing.T) {
@@ -304,6 +459,7 @@ func TestParseImportSeedsDefaults(t *testing.T) {
 	require.Equal(t, "8080", doc.Server.Port)
 	require.Equal(t, "gitrieve.db", doc.Server.DbPath)
 	require.False(t, doc.Server.AuthEnabled)
+	require.Equal(t, 2, doc.Server.LogRetentionMonths)
 }
 
 func TestParseImportPreservesExplicitZeroScheduleJitter(t *testing.T) {

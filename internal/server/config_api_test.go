@@ -16,6 +16,134 @@ import (
 	"github.com/wnarutou/gitrieve/internal/typedef"
 )
 
+// Preview/apply must return useful rejection diagnostics without allowing
+// decoder-generated token prefixes into actual HTTP response bodies.
+func TestAccountPoolMalformedShapesHTTPDoNotLeakOrPublish(t *testing.T) {
+	for _, route := range []string{"/api/config/import/preview", "/api/config/import"} {
+		for _, content := range []string{
+			"githubAccounts: [{name: alice, token: {value: ghp_sensitive-secret}}]",
+			"githubAccounts: [ghp_sensitive-secret]",
+		} {
+			t.Run(route+content[:17], func(t *testing.T) {
+				loadTempConfig(t, "githubAccounts: [{name: alice, token: original-token}]\n")
+				testDB, err := db.Initialize(":memory:")
+				require.NoError(t, err)
+				defer testDB.Close()
+				s := server.NewConfigTestServer(config.GetIns(), testDB)
+				before, err := os.ReadFile(config.Path)
+				require.NoError(t, err)
+				body, err := json.Marshal(map[string]string{"config": content})
+				require.NoError(t, err)
+				code, response := getJSON(t, s, http.MethodPost, route, string(body))
+				require.Equal(t, http.StatusBadRequest, code)
+				encoded, err := json.Marshal(response)
+				require.NoError(t, err)
+				require.NotContains(t, string(encoded), "ghp_sen")
+				require.Equal(t, "original-token", s.Cfg().GitHubAccounts[0].Token)
+				require.Equal(t, "original-token", config.GetIns().GitHubAccounts[0].Token)
+				after, err := os.ReadFile(config.Path)
+				require.NoError(t, err)
+				require.Equal(t, before, after)
+			})
+		}
+	}
+}
+
+// Omitting the secret-containing list from global diffs hides changes; echoing
+// its raw value leaks every credential in the HTTP response.
+func TestPreviewAccountPoolMasksTokensAndKeepsLabels(t *testing.T) {
+	loadTempConfig(t, "githubAccounts: [{name: alice, token: old-private-token}]\ngithubAccountConcurrency: 2\n")
+	testDB, err := db.Initialize(":memory:")
+	require.NoError(t, err)
+	defer testDB.Close()
+	s := server.NewConfigTestServer(config.GetIns(), testDB)
+	body, err := json.Marshal(map[string]string{"config": "githubAccounts: [{name: bob, token: new-private-token}, {name: carol, token: another-private-token}]\ngithubAccountConcurrency: 3\n"})
+	require.NoError(t, err)
+	code, resp := getJSON(t, s, http.MethodPost, "/api/config/import/preview", string(body))
+	require.Equal(t, http.StatusOK, code)
+	changes, ok := resp["data"].(map[string]interface{})["globals"].([]interface{})
+	require.True(t, ok, "preview must report changed account globals")
+	byField := map[string]map[string]interface{}{}
+	for _, change := range changes {
+		c := change.(map[string]interface{})
+		byField[c["field"].(string)] = c
+	}
+	require.Contains(t, byField, "githubAccounts")
+	require.Equal(t, []interface{}{map[string]interface{}{"name": "alice", "token": "***"}}, byField["githubAccounts"]["existing"])
+	require.Equal(t, []interface{}{map[string]interface{}{"name": "bob", "token": "***"}, map[string]interface{}{"name": "carol", "token": "***"}}, byField["githubAccounts"]["imported"])
+	require.Equal(t, float64(3), byField["githubAccountConcurrency"]["imported"])
+	encoded, err := json.Marshal(resp)
+	require.NoError(t, err)
+	require.NotContains(t, string(encoded), "private-token")
+}
+
+// Ignoring either choice or failing to save it changes the pool on reload.
+func TestApplyAccountPoolGlobalChoicesPersist(t *testing.T) {
+	for _, choice := range []string{"existing", "imported"} {
+		t.Run(choice, func(t *testing.T) {
+			loadTempConfig(t, "githubAccounts: [{name: alice, token: old-private-token}]\ngithubAccountConcurrency: 2\n")
+			testDB, err := db.Initialize(":memory:")
+			require.NoError(t, err)
+			defer testDB.Close()
+			s := server.NewConfigTestServer(config.GetIns(), testDB)
+			body, err := json.Marshal(map[string]interface{}{
+				"config":  "githubAccounts: [{name: bob, token: new-private-token}]\ngithubAccountConcurrency: 3\n",
+				"choices": map[string]interface{}{"global_choices": map[string]string{"githubAccounts": choice, "githubAccountConcurrency": choice}},
+			})
+			require.NoError(t, err)
+			code, _ := getJSON(t, s, http.MethodPost, "/api/config/import", string(body))
+			require.Equal(t, http.StatusOK, code)
+			code, _ = getJSON(t, s, http.MethodPost, "/api/config/reload", "")
+			require.Equal(t, http.StatusOK, code)
+			code, response := getJSON(t, s, http.MethodGet, "/api/config/export", "")
+			require.Equal(t, http.StatusOK, code)
+			exported := response["data"].(map[string]interface{})["yaml"].(string)
+			if choice == "existing" {
+				require.Contains(t, exported, "name: alice")
+				require.Contains(t, exported, "token: old-private-token")
+				require.Contains(t, exported, "githubAccountConcurrency: 2")
+			} else {
+				require.Contains(t, exported, "name: bob")
+				require.Contains(t, exported, "token: new-private-token")
+				require.Contains(t, exported, "githubAccountConcurrency: 3")
+			}
+		})
+	}
+}
+
+// Importing a pre-pool document must either retain the chosen current pool or
+// clear it and use the imported legacy token, with the default account cap.
+func TestApplyLegacyDocumentAccountPoolChoices(t *testing.T) {
+	for _, choice := range []string{"existing", "imported"} {
+		t.Run(choice, func(t *testing.T) {
+			loadTempConfig(t, "githubAccounts: [{name: alice, token: pool-secret}]\ngithubAccountConcurrency: 5\n")
+			testDB, err := db.Initialize(":memory:")
+			require.NoError(t, err)
+			defer testDB.Close()
+			s := server.NewConfigTestServer(config.GetIns(), testDB)
+			body, err := json.Marshal(map[string]interface{}{
+				"config":  "githubToken: legacy-import-secret\n",
+				"choices": map[string]interface{}{"global_choices": map[string]string{"githubAccounts": choice, "githubAccountConcurrency": choice}},
+			})
+			require.NoError(t, err)
+			code, _ := getJSON(t, s, http.MethodPost, "/api/config/import", string(body))
+			require.Equal(t, http.StatusOK, code)
+			code, _ = getJSON(t, s, http.MethodPost, "/api/config/reload", "")
+			require.Equal(t, http.StatusOK, code)
+			cfg := s.Cfg()
+			if choice == "existing" {
+				require.Len(t, cfg.GitHubAccounts, 1)
+				require.Equal(t, "pool-secret", cfg.GitHubAccounts[0].Token)
+				require.Equal(t, uint(5), cfg.GitHubAccountConcurrency)
+			} else {
+				require.Empty(t, cfg.GitHubAccounts)
+				require.Equal(t, uint(2), cfg.GitHubAccountConcurrency)
+				require.Equal(t, "legacy-import-secret", cfg.GitHubToken)
+			}
+		})
+	}
+}
+
 func writeFile(t *testing.T, path, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
@@ -70,6 +198,44 @@ func TestExportConfigYAML(t *testing.T) {
 	require.Contains(t, yamlStr, "host: 127.0.0.1")
 }
 
+func TestImportLogRetentionPreviewsAndPersistsChosenValue(t *testing.T) {
+	loadTempConfig(t, "server:\n  logRetentionMonths: 2\n")
+	d, err := db.Initialize(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, d.Close()) })
+	s := server.NewConfigTestServer(config.GetIns(), d)
+	importYAML := "repository:\n  - name: test\n    url: github.com/test/repo\nserver:\n  logRetentionMonths: 6\n"
+	payload, err := json.Marshal(map[string]interface{}{"config": importYAML})
+	require.NoError(t, err)
+	code, resp := getJSON(t, s, http.MethodPost, "/api/config/import/preview", string(payload))
+	require.Equal(t, 200, code)
+	data := resp["data"].(map[string]interface{})
+	changes := data["server"].([]interface{})
+	require.Len(t, changes, 1)
+	require.Equal(t, "logRetentionMonths", changes[0].(map[string]interface{})["field"])
+	for _, selection := range []string{"existing", "imported"} {
+		payload, err = json.Marshal(map[string]interface{}{
+			"config":  importYAML,
+			"choices": map[string]interface{}{"server_choices": map[string]string{"logRetentionMonths": selection}},
+		})
+		require.NoError(t, err)
+		code, _ = getJSON(t, s, http.MethodPost, "/api/config/import", string(payload))
+		require.Equal(t, 200, code)
+		want := 2
+		if selection == "imported" {
+			want = 6
+		}
+		require.Equal(t, want, config.GetServerSection().LogRetentionMonths)
+		require.NoError(t, config.Reload())
+		require.Equal(t, want, config.GetServerSection().LogRetentionMonths)
+	}
+	// A file edit plus the reload endpoint also changes the setting the worker reads.
+	writeFile(t, config.Path, "repository:\n  - name: test\n    url: github.com/test/repo\nserver:\n  logRetentionMonths: 3\n")
+	code, _ = getJSON(t, s, http.MethodPost, "/api/config/reload", "")
+	require.Equal(t, 200, code)
+	require.Equal(t, 3, config.GetServerSection().LogRetentionMonths)
+}
+
 func TestPreviewImportValidationErrors(t *testing.T) {
 	loadTempConfig(t, "")
 	testDB, err := db.Initialize(":memory:")
@@ -115,6 +281,7 @@ func TestPreviewImportDiff(t *testing.T) {
 		SyncOverdueGrace:            config.DefaultSyncOverdueGrace,
 		SyncStuckThreshold:          config.DefaultSyncStuckThreshold,
 		GitHubAPIConcurrency:        2,
+		GitHubAccountConcurrency:    2,
 		GitHubMinRequestInterval:    200 * time.Millisecond,
 		GitHubLowRemainingThreshold: 100,
 		GitHubScheduleJitter:        30 * time.Second,

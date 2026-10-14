@@ -34,6 +34,12 @@ http://localhost:8080
 
 The default host is `localhost` and the default port is `8080`. Static assets (CSS/JS) are served from `/static/*`.
 
+The badge next to **Gitrieve** in the top navigation shows the running server's
+version. Release binaries and release Docker images include their release version;
+local builds default to `dev`. To label a custom build, use
+`go build -ldflags="-X github.com/wnarutou/gitrieve/internal/buildinfo.Version=1.2.3" -o gitrieve main.go`
+or `docker build --build-arg VERSION=1.2.3 -t gitrieve .`.
+
 ## Features
 
 ### Job management
@@ -42,6 +48,31 @@ The default host is `localhost` and the default port is `8080`. Static assets (C
 - **View job history** — list past and current jobs with status, start/end time, and error messages. Filter by status or repository, and paginate.
 - **Cancel a job** — stop a running or pending job.
 - **Real-time logs** — every job has a live log stream that updates as the job runs, using Server-Sent Events. The stream closes automatically when the job finishes.
+
+### Log retention
+
+The server cleans historical execution logs in the background at startup and
+every 24 hours. `server.logRetentionMonths` controls the retention period in
+calendar months (default: `2`). Missing, zero, or negative values use the default.
+For example:
+
+```yaml
+server:
+  logRetentionMonths: 2
+```
+
+Cleanup uses the **execution's end time**, not each log line's timestamp. All log
+lines for a completed, failed, or cancelled execution are removed only when its
+`end_time` is strictly earlier than the retention cutoff. Pending/running
+executions, executions without an end time, and executions ending exactly at the
+cutoff keep their logs. If the target month is shorter, its last day is used
+(for example, March 31 minus one month is February 28, or 29 in a leap year).
+
+Execution records and component outcomes remain available for job history and
+repository health statistics. Deletion is batched, and log lookups use an index.
+SQLite reuses the freed database pages; cleanup does not run a blocking `VACUUM`.
+Restart the server or reload configuration to pick up a changed retention value;
+the next cleanup pass reads the current setting.
 
 ### Repository sync health
 
@@ -79,7 +110,7 @@ or revisit the page to see later server-side changes.
 ### Configuration management
 
 - **Repositories** — add, edit, and remove repository entries from your `config.yaml` without editing the file by hand. Changes are persisted back to the config file.
-- **Storage backends** — add, edit, and remove `file` and `s3` storage backends. Changes are persisted back to the config file.
+- **Storage backends** — add, edit, and remove local `file` storage backends. Changes are persisted back to the config file.
 
 All write operations update the in-memory config immediately and then attempt to save it to disk. If the save fails (for example, the config file is read-only), the change still takes effect for the running server, and the API response will carry a warning message.
 
@@ -156,7 +187,7 @@ previous process to `failed`, including active component rows.
 - **Use a strong `authToken`.** When `authEnabled: true`, set a long, random token. Clients send it as `Authorization: Bearer <token>` on every API request. See the [API reference](api.md#authentication) for details.
 - **Bind carefully.** The default `host: localhost` only accepts connections from the same machine. To expose the server to other machines, set `host: 0.0.0.0` (or a specific interface) and put it behind a reverse proxy with TLS.
 - **No TLS built in.** The server listens over plain HTTP. For remote access, terminate TLS at a reverse proxy (nginx, Caddy, etc.) in front of gitrieve.
-- **Config file writes.** The server writes back to `config.yaml` when you edit repositories or storage through the UI/API. Ensure the file is writable by the user running gitrieve, and protect the file because it may contain storage credentials and tokens.
+- **Config file writes.** The server writes back to `config.yaml` when you edit repositories or storage through the UI/API. Ensure the file is writable by the user running gitrieve, and protect the file because it may contain authentication tokens.
 
 ## Next steps
 

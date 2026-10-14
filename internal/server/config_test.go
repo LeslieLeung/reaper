@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
+
 	"github.com/wnarutou/gitrieve/internal/config"
 	server "github.com/wnarutou/gitrieve/internal/server"
 )
@@ -25,6 +28,30 @@ func loadTempConfig(t *testing.T, serverSection string) {
 	}
 	config.Path = path
 	config.Init()
+}
+
+func TestLogRetentionConfigDefaultsAndExport(t *testing.T) {
+	for _, tc := range []struct {
+		section string
+		want    int
+	}{
+		{"", 2},
+		{"server:\n  logRetentionMonths: 6\n", 6},
+		{"server:\n  logRetentionMonths: 0\n", 2},
+		{"server:\n  logRetentionMonths: -1\n", 2},
+	} {
+		loadTempConfig(t, tc.section)
+		cfg := server.GetServerConfig()
+		require.Equal(t, "0.0.0.0", cfg.Host)
+		require.Equal(t, "8080", cfg.Port)
+		require.Equal(t, "gitrieve.db", cfg.DbPath)
+		// The exported document must carry the same effective setting the cleanup reads.
+		exported, err := config.Export()
+		require.NoError(t, err)
+		var doc map[string]interface{}
+		require.NoError(t, yaml.Unmarshal([]byte(exported), &doc))
+		require.Equal(t, tc.want, doc["server"].(map[string]interface{})["logRetentionMonths"])
+	}
 }
 
 // Regression test: the server section in config.yaml must be honored. Before

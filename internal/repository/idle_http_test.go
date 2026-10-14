@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"crypto/tls"
 	"io"
 	"net"
 	"net/http"
@@ -13,10 +14,42 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp"
 	"github.com/go-git/go-git/v5/plumbing/protocol/packp/capability"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/client"
 	gitHTTP "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGitAccountTransportDetectsIdle(t *testing.T) {
+	seenToken := make(chan string, 1)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, token, _ := r.BasicAuth()
+		seenToken <- token
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	idleClient := newGitHTTPClient(100 * time.Millisecond)
+	defer idleClient.CloseIdleConnections()
+	tr := idleClient.Transport.(*http.Transport)
+	// Route a trusted GitHub endpoint to the controlled TLS test server.
+	tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	dial := tr.DialContext
+	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dial(ctx, network, server.Listener.Addr().String())
+	}
+	guarded := &githubGitTransport{base: gitHTTP.NewClient(idleClient), httpBase: tr}
+	endpoint, err := transport.NewEndpoint("https://github.com/owner/repo")
+	require.NoError(t, err)
+	session, err := guarded.NewUploadPackSession(endpoint, &githubGitAuth{BasicAuth: &gitHTTP.BasicAuth{Username: "x-access-token", Password: "test-token"}})
+	require.NoError(t, err)
+	defer session.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = session.AdvertisedReferencesContext(ctx)
+	require.ErrorIs(t, err, errGitIdleTimeout)
+	require.NoError(t, ctx.Err())
+	require.Equal(t, "test-token", <-seenToken)
+}
 
 func TestGitHTTPClientTimesOutWithoutResponseHeaders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

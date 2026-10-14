@@ -145,6 +145,24 @@ test('repository page buttons request the selected page and search resets to pag
     assert.equal(searchRequest.get('search'), 'needle');
 });
 
+test('next run sorting survives route loading, direction changes and pagination', async () => {
+    const harness = createHarness(() => repositoryPage(60), '#/repositories?sort=next_run&direction=asc');
+    vm.runInContext('renderApp()', harness.context);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(harness.app.querySelector('#repos-sort').value, 'next_run');
+
+    harness.app.querySelector('#repos-direction').value = 'desc';
+    harness.app.querySelector('#repos-direction').dispatch('change');
+    await new Promise(resolve => setImmediate(resolve));
+    harness.app.pageButtons.find(button => button.dataset.page === '2').dispatch('click');
+    await new Promise(resolve => setImmediate(resolve));
+
+    const params = new URL(harness.requests.at(-1), 'http://localhost').searchParams;
+    assert.equal(params.get('sort'), 'next_run');
+    assert.equal(params.get('direction'), 'desc');
+    assert.equal(params.get('page'), '2');
+});
+
 test('an out-of-range repository page refetches the final valid page', async () => {
     const harness = createHarness(url => {
         const page = new URL(url, 'http://localhost').searchParams.get('page');

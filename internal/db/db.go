@@ -1,7 +1,9 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	_ "modernc.org/sqlite" // pure-Go SQLite driver, no CGo required
 )
 
@@ -31,8 +33,41 @@ const executionIndexSchema = `
 		ON executions(status);
 `
 
+const logRetentionIndexSchema = `
+	CREATE INDEX IF NOT EXISTS idx_logs_execution_id ON logs(execution_id, id);
+	CREATE INDEX IF NOT EXISTS idx_executions_log_retention ON executions(end_time, id)
+		WHERE status IN ('completed', 'failed', 'cancelled') AND end_time IS NOT NULL;
+`
+
 type DB struct {
 	*sql.DB
+	readDB *sql.DB
+}
+
+// Queries use a separate pool so WAL readers (including slow log streams) do
+// not hold up the single writer. Transactions always use the embedded writer
+// pool, keeping all statements in a transaction on the same connection.
+func (d *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return d.readDB.QueryContext(ctx, query, args...)
+}
+
+func (d *DB) Query(query string, args ...any) (*sql.Rows, error) {
+	return d.QueryContext(context.Background(), query, args...)
+}
+
+func (d *DB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	return d.readDB.QueryRowContext(ctx, query, args...)
+}
+
+func (d *DB) QueryRow(query string, args ...any) *sql.Row {
+	return d.QueryRowContext(context.Background(), query, args...)
+}
+
+func (d *DB) Close() error {
+	if d.readDB == d.DB {
+		return d.DB.Close()
+	}
+	return errors.Join(d.readDB.Close(), d.DB.Close())
 }
 
 func Initialize(path string) (*DB, error) {
@@ -55,15 +90,21 @@ func Initialize(path string) (*DB, error) {
 		return nil, err
 	}
 
-	// An in-memory SQLite database lives per-connection, so a connection pool
-	// would hand out multiple unrelated databases (schema created on one, empty
-	// on the rest). Pin the pool to a single connection for ":memory:" so tests
-	// that concurrently read and write (job goroutines + assertions) see a
-	// coherent database. File-backed databases are shared across connections
-	// and need no such pinning.
-	if path == ":memory:" {
-		db.SetMaxOpenConns(1)
+	// SQLite permits only one writer, even in WAL mode. Queue local writes in
+	// database/sql instead of letting log inserts and terminal status updates
+	// compete until busy_timeout expires. Pool waits respect context deadlines.
+	db.SetMaxOpenConns(1)
+	d := &DB{DB: db, readDB: db}
+	if path != ":memory:" {
+		// Keep readers concurrent with the writer. query_only prevents accidental
+		// writes through Query/QueryRow from bypassing the serialized writer.
+		d.readDB, err = sql.Open("sqlite", dsn+"&_pragma=query_only(1)")
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
+	// :memory: must share its one connection: each connection has its own DB.
 
 	// Create tables
 	_, err = db.Exec(`
@@ -86,18 +127,18 @@ func Initialize(path string) (*DB, error) {
 			message TEXT NOT NULL,
 			FOREIGN KEY (execution_id) REFERENCES executions(id)
 		);
-	` + componentSchema)
+	` + componentSchema + logRetentionIndexSchema)
 	if err != nil {
-		return &DB{db}, err
+		return d, err
 	}
 
-	hasRepoKey, err := columnExists(&DB{db}, "executions", "repo_key")
+	hasRepoKey, err := columnExists(d, "executions", "repo_key")
 	if err != nil {
-		return &DB{db}, err
+		return d, err
 	}
 	if hasRepoKey {
 		_, err = db.Exec(executionIndexSchema)
 	}
 
-	return &DB{db}, err
+	return d, err
 }

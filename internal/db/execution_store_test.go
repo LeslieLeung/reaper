@@ -2,12 +2,93 @@ package db
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+// Completion must wait behind another local writer, even when that writer
+// holds its transaction longer than SQLite's busy timeout.
+func TestFileDBFinishComponentWaitsForWriter(t *testing.T) {
+	testDB, err := Initialize(filepath.Join(t.TempDir(), "completion.db"))
+	require.NoError(t, err)
+	defer testDB.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	insertExecution(t, testDB, "release-contention", "github.com/acme/widgets", ComponentRunning)
+	require.NoError(t, testDB.CreateComponents(ctx, "release-contention", []ComponentName{ComponentRelease}))
+	require.NoError(t, testDB.StartComponent(ctx, "release-contention", ComponentRelease, time.Now()))
+
+	tx, err := testDB.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO logs (execution_id, timestamp, level, message)
+		VALUES ('release-contention', datetime('now'), 'info', 'competing writer')`)
+	require.NoError(t, err)
+
+	finishedAt := time.Now().UTC()
+	done := make(chan error, 1)
+	go func() {
+		done <- testDB.FinishComponent(ctx, "release-contention", ComponentRelease, ComponentCompleted, finishedAt, "")
+	}()
+
+	// Keep the real write lock beyond the configured 5000ms busy timeout.
+	select {
+	case err := <-done:
+		t.Fatalf("completion returned before the writer released its lock: %v", err)
+	case <-time.After(6 * time.Second):
+	}
+	require.NoError(t, tx.Commit())
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("completion did not resume after the writer committed")
+	}
+
+	components, err := testDB.ListComponents(ctx, "release-contention")
+	require.NoError(t, err)
+	require.Len(t, components, 1)
+	require.Equal(t, ComponentCompleted, components[0].Status)
+	require.NotNil(t, components[0].EndTime)
+	require.True(t, finishedAt.Equal(*components[0].EndTime))
+	require.Empty(t, components[0].ErrorMessage)
+}
+
+func TestFileDBWaitingWriteHonorsContext(t *testing.T) {
+	testDB, err := Initialize(filepath.Join(t.TempDir(), "cancel.db"))
+	require.NoError(t, err)
+	defer testDB.Close()
+	insertExecution(t, testDB, "release-cancel", "github.com/acme/widgets", ComponentRunning)
+	require.NoError(t, testDB.CreateComponents(context.Background(), "release-cancel", []ComponentName{ComponentRelease}))
+
+	tx, err := testDB.Begin()
+	require.NoError(t, err)
+	defer tx.Rollback()
+	_, err = tx.Exec(`UPDATE executions SET status = 'running' WHERE id = 'release-cancel'`)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- testDB.FinishComponent(ctx, "release-cancel", ComponentRelease, ComponentCompleted, time.Now(), "")
+	}()
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiting write ignored its context deadline")
+	}
+	require.NoError(t, tx.Rollback())
+	components, err := testDB.ListComponents(context.Background(), "release-cancel")
+	require.NoError(t, err)
+	require.Len(t, components, 1)
+	require.Equal(t, ComponentPending, components[0].Status)
+}
 
 func TestRepositoryExecutionLookupPlansUseRepositoryIndexes(t *testing.T) {
 	testDB, err := Initialize(":memory:")

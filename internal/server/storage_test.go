@@ -104,7 +104,7 @@ func TestCreateStorage(t *testing.T) {
 		assert.Len(t, getResp.Data, 2)
 	})
 
-	t.Run("s3_storage", func(t *testing.T) {
+	t.Run("reject_s3_storage", func(t *testing.T) {
 		body, _ := json.Marshal(map[string]interface{}{
 			"name":            "s3-store",
 			"type":            "s3",
@@ -119,20 +119,12 @@ func TestCreateStorage(t *testing.T) {
 		resp := httptest.NewRecorder()
 		s.ServeHTTP(resp, req)
 
-		assert.Equal(t, 200, resp.Code)
-		var response struct {
-			Code int                  `json:"code"`
-			Data typedef.MultiStorage `json:"data"`
-		}
-		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &response))
-		assert.Equal(t, 200, response.Code)
-		assert.Equal(t, "s3-store", response.Data.Name)
-		assert.Equal(t, "s3", response.Data.Type)
-		assert.Equal(t, "https://s3.example.com", response.Data.Endpoint)
-		assert.Equal(t, "archives", response.Data.Bucket)
-		assert.Equal(t, "us-east-1", response.Data.Region)
-		assert.Equal(t, "AKIAEXAMPLE", response.Data.AccessKeyID)
-		assert.Equal(t, "secretexample", response.Data.SecretAccessKey)
+		assert.Equal(t, 400, resp.Code)
+		assert.Equal(t, 400, storageResponseCode(t, resp))
+		req, _ = http.NewRequest("GET", "/api/storage", nil)
+		resp = httptest.NewRecorder()
+		s.ServeHTTP(resp, req)
+		assert.NotContains(t, resp.Body.String(), "s3-store")
 	})
 
 	t.Run("duplicate_name", func(t *testing.T) {
@@ -192,6 +184,28 @@ func TestUpdateStorage(t *testing.T) {
 	}
 
 	s := server.NewStorageTestServer(cfg, testDB)
+
+	t.Run("reject_s3_update", func(t *testing.T) {
+		for _, key := range []string{"type", "Type"} {
+			body, _ := json.Marshal(map[string]string{key: "s3", "path": "/changed"})
+			req, _ := http.NewRequest("PUT", "/api/storage/local", bytes.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+			s.ServeHTTP(resp, req)
+			assert.Equal(t, 400, resp.Code)
+			assert.Equal(t, 400, storageResponseCode(t, resp))
+			req, _ = http.NewRequest("GET", "/api/storage", nil)
+			resp = httptest.NewRecorder()
+			s.ServeHTTP(resp, req)
+			var response struct {
+				Data []typedef.MultiStorage `json:"data"`
+			}
+			require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &response))
+			require.Len(t, response.Data, 1)
+			assert.Equal(t, "file", response.Data[0].Type)
+			assert.Equal(t, "/tmp/archives", response.Data[0].Path)
+		}
+	})
 
 	t.Run("success", func(t *testing.T) {
 		body, _ := json.Marshal(map[string]interface{}{
