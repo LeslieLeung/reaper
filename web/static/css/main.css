@@ -88,6 +88,22 @@ body {
 
 .app { max-width: 1200px; margin: 24px auto; padding: 0 24px; }
 
+.maintenance-bar {
+    max-width: 1152px;
+    margin: 16px auto 0;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--panel);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.maintenance-actions { display: flex; gap: 8px; flex-shrink: 0; }
+@media (max-width: 1200px) { .maintenance-bar { margin-left: 24px; margin-right: 24px; } }
+
 .page-header {
     display: flex;
     align-items: center;

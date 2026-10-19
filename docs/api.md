@@ -22,6 +22,46 @@ Every JSON endpoint returns the same envelope:
 
 The HTTP status code matches `code` on the happy path (e.g. `200`, `404`, `500`). `message` carries human-readable detail on error or when a write succeeded in memory but could not be persisted to the config file.
 
+## Maintenance
+
+The following endpoints use the same authentication as other API routes:
+
+| Method | Path | Behavior |
+|---|---|---|
+| `GET` | `/api/maintenance` | Read the current maintenance and drain status. |
+| `POST` | `/api/maintenance` | Block new submissions, cancel queued executions, and request safe stops from running jobs. |
+| `DELETE` | `/api/maintenance` | Reopen admission after a successful drain without submitting or replaying jobs. |
+
+Each successful response contains a status object in `data`:
+
+```json
+{
+  "enabled": true,
+  "drained": false,
+  "ready": false,
+  "shutting_down": false,
+  "running": 2,
+  "pending": 0,
+  "preparing": 0
+}
+```
+
+`pending` includes queued executions whose cancellation is still being saved;
+`preparing` counts admissions still unwinding. `drained` means execution work and
+admission/persistence operations have settled. `ready` additionally requires no
+unresolved drain persistence error; the optional `error` field describes such a
+failure. Download/storage failures remain visible in job history.
+
+Entering maintenance is idempotent. Leaving returns `409` while draining, after
+an unresolved drain persistence failure, or once process shutdown has begun.
+New single/bulk submissions return `503` during maintenance; a bulk request
+already underway preserves its partial outcome counts.
+
+Running jobs remain `running` until their current safe unit and archive writes
+finish, then become `cancelled` with `maintenance requested` unless the job
+completed normally or failed. Maintenance is not persisted: restart restores
+normal scheduling, and future cron/manual invocations create new executions.
+
 ## Authentication
 
 The server supports an optional bearer-token mode, controlled by the `server` section of `config.yaml`:

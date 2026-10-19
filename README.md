@@ -235,3 +235,43 @@ docker compose up -d
 
 The released image is a multi-arch manifest covering `linux/amd64` and
 `linux/arm64`, so it works on both x86_64 and Apple Silicon machines.
+
+### Maintenance before upgrades
+
+Click **进入维护模式** (Enter maintenance) at the top of the Web UI and wait for
+**可以安全升级** (Ready to upgrade), then update the container:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Maintenance rejects new submissions and cancels queued executions. Running
+Git/Wiki network operations stop; Issue/Discussion finish the current list page,
+including its comments/replies, and publish the downloaded data as an archive.
+Release finishes downloading and storing its current file. Archive writes already
+in progress finish before shutdown. Download/storage errors remain failures.
+
+With `useCache: false`, an incomplete Issue/Discussion list is published as a
+separate `issues.partial.<ID>.tar.gz` / `discussions.partial.<ID>.tar.gz`, preserving
+the previous complete archive. Partial artifacts are retained; a later full sync
+updates the canonical archive normally. Cached syncs republish their archives on
+subsequent successful runs even without upstream changes, repairing interrupted
+or failed writes at the cost of additional compression and upload work.
+
+Maintenance is process-local. After restart, normal cron scheduling resumes;
+old queued/interrupted jobs are not replayed immediately. The next scheduled or
+manual invocation creates a new execution. Repositories without cron require a
+manual invocation. Without restarting, use **退出维护模式** (Leave maintenance)
+after draining to reopen admission without submitting any jobs.
+
+In `server` mode, SIGTERM/SIGINT uses the same drain. The example Compose file
+allows `stop_grace_period: 10m`; Docker may still force termination after that
+deadline. Wait for readiness in the UI first when files/pages can take longer.
+Database persistence failures prevent a ready indication; inspect logs and resolve
+the storage problem before proceeding.
+
+The authenticated maintenance API is `GET /api/maintenance` (status),
+`POST /api/maintenance` (enter), and `DELETE /api/maintenance` (leave).
+`ready: true` means execution work and state persistence have settled. Maintenance
+status refreshes never refresh the Repositories list automatically.

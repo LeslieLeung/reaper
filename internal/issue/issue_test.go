@@ -76,7 +76,9 @@ func TestSyncFollowsCompleteNextIssueLink(t *testing.T) {
 						require.Equal(t, "asc", req.URL.Query().Get("direction"))
 						require.Equal(t, "100", req.URL.Query().Get("per_page"))
 						if tc.incremental {
-							require.Equal(t, "2026-01-01T00:00:00Z", req.URL.Query().Get("since"))
+							// Include the boundary second so a maintenance stop between
+							// pages cannot skip issues sharing the cached update time.
+							require.Equal(t, "2025-12-31T23:59:59Z", req.URL.Query().Get("since"))
 						} else {
 							require.NotContains(t, req.URL.Query(), "since")
 						}

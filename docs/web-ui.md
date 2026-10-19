@@ -2,6 +2,20 @@
 
 gitrieve ships with a built-in web UI for managing archive jobs and configuration through a browser, instead of the CLI commands. This guide covers how to start the server, access the UI, and configure it.
 
+## Maintenance before upgrades
+
+Use **进入维护模式** (Enter maintenance) in the status bar before stopping the
+container. Wait for **可以安全升级** (Ready to upgrade): Git/Wiki network work
+stops, Issue/Discussion finish their current list page and archive writes, and
+Release finishes its current file and storage writes. The status bar refreshes
+while work drains; it does not reload the Repositories list.
+
+Queued and interrupted executions are recorded as cancelled for maintenance.
+After restart, normal scheduling resumes without replaying them. Without
+restarting, **退出维护模式** (Leave maintenance) reopens admission after draining.
+See [the upgrade instructions](../README.md#maintenance-before-upgrades) for
+Docker grace periods and partial-archive behavior.
+
 ## Starting the server
 
 Build gitrieve and launch the server command:

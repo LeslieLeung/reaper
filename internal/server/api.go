@@ -126,6 +126,9 @@ func joinMessages(messages ...string) string {
 }
 
 func (a *API) CreateJob(c *gin.Context) {
+	if a.rejectMaintenance(c) {
+		return
+	}
 	var req CreateJobRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, Response{
@@ -137,6 +140,10 @@ func (a *API) CreateJob(c *gin.Context) {
 
 	jobIDs, err := a.executor.ExecuteJob(req.RepositoryKey)
 	if err != nil {
+		if errors.Is(err, executor.ErrMaintenance) {
+			c.JSON(http.StatusServiceUnavailable, Response{Code: 503, Message: err.Error()})
+			return
+		}
 		if errors.Is(err, executor.ErrRepositoryActive) {
 			c.JSON(http.StatusConflict, Response{
 				Code:    http.StatusConflict,
@@ -171,6 +178,9 @@ func (a *API) CreateJob(c *gin.Context) {
 // request. It never accepts repository IDs, and each confirmed candidate is
 // independently rechecked and submitted through the shared Executor.
 func (a *API) BulkCreateJobs(c *gin.Context) {
+	if a.rejectMaintenance(c) {
+		return
+	}
 	req, err := decodeBulkCreateJobsRequest(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, Response{Code: http.StatusBadRequest, Message: "Invalid request: " + err.Error()})
@@ -233,6 +243,9 @@ bulkLoop:
 		case executeErr == nil:
 			result.Queued++
 		case ctx.Err() != nil || errors.Is(executeErr, context.Canceled) || errors.Is(executeErr, context.DeadlineExceeded):
+			result.FailedToEnqueue += remaining
+			break bulkLoop
+		case errors.Is(executeErr, executor.ErrMaintenance):
 			result.FailedToEnqueue += remaining
 			break bulkLoop
 		case errors.Is(executeErr, executor.ErrRepositoryActive):

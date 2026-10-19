@@ -14,6 +14,7 @@ import (
 	"github.com/wnarutou/gitrieve/internal/config"
 	"github.com/wnarutou/gitrieve/internal/githubapi"
 	"github.com/wnarutou/gitrieve/internal/lock"
+	"github.com/wnarutou/gitrieve/internal/maintenance"
 	"github.com/wnarutou/gitrieve/internal/retry"
 	"github.com/wnarutou/gitrieve/internal/scm"
 	"github.com/wnarutou/gitrieve/internal/storage"
@@ -101,7 +102,7 @@ type discussionsQuery struct {
 				HasNextPage bool
 				EndCursor   githubv4.String
 			}
-		} `graphql:"discussions(first: $discussionCount, after: $discussionCursor, orderBy: {field: UPDATED_AT, direction: DESC})"`
+		} `graphql:"discussions(first: $discussionCount, after: $discussionCursor, orderBy: {field: UPDATED_AT, direction: ASC})"`
 	} `graphql:"repository(owner: $owner, name: $name)"`
 }
 
@@ -164,6 +165,9 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
+	if maintenance.Requested(ctx) {
+		return maintenance.ErrRequested
+	}
 	isUpdated := false
 	useCache := repo.UseCache
 	currentDir, err := os.Getwd() // Fix: Handle os.Getwd() error
@@ -203,6 +207,9 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 		return err
 	}
 	defer unlock()
+	if maintenance.Requested(ctx) {
+		return maintenance.ErrRequested
+	}
 
 	gitDir := path.Join(workingDir, r.Host, r.Owner, repoName, "discussion")
 	err = storage.CreateDirIfNotExist(gitDir)
@@ -224,6 +231,14 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 	if err != nil {
 		ui.Errorf("Error reading discussion directory: %s", err)
 		return err
+	}
+	// Retry archive publication from cached records even if the remote has
+	// no new updates, including after a previous storage failure.
+	for _, file := range files {
+		if strings.HasSuffix(file.Name(), ".md") {
+			isUpdated = true
+			break
+		}
 	}
 
 	var lastUpdate time.Time
@@ -278,7 +293,11 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 	}
 
 	// Fetch discussion list
+	fullyListed := false
 	for {
+		if maintenance.Requested(ctx) {
+			break
+		}
 		var query discussionsQuery
 		err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
 			return githubapi.Do(ctx, "graphql", accounts, func(token string) (githubapi.Observation, error) {
@@ -293,7 +312,7 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 		}
 
 		for _, discussion := range query.Repository.Discussions.Nodes {
-			if discussion.UpdatedAt.Before(lastUpdate) || discussion.UpdatedAt.Equal(lastUpdate) {
+			if discussion.UpdatedAt.Before(lastUpdate) {
 				continue
 			}
 			isUpdated = true
@@ -350,7 +369,7 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 						"name":          githubv4.String(r.Name),
 						"number":        githubv4.Int(discussion.Number),
 						"commentCount":  githubv4.Int(50),
-						"commentCursor": (*githubv4.String)(nil),
+						"commentCursor": commentVariables["commentCursor"],
 						"replyCount":    githubv4.Int(50),
 						"replyCursor":   (*githubv4.String)(nil),
 					}
@@ -382,17 +401,22 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 						}
 
 						// Find matching comment
+						found, hasNextPage := false, false
 						for _, c := range replyQuery.Repository.Discussion.Comments.Nodes {
 							if c.DatabaseId == comment.DatabaseId {
+								found = true
 								allReplies = append(allReplies, c.Replies.Nodes...)
-								if !c.Replies.PageInfo.HasNextPage {
-									break
-								}
+								hasNextPage = c.Replies.PageInfo.HasNextPage
 								replyVariables["replyCursor"] = c.Replies.PageInfo.EndCursor
 								break
 							}
 						}
-						break
+						if !found {
+							return fmt.Errorf("comment %d missing while fetching replies", comment.DatabaseId)
+						}
+						if !hasNextPage {
+							break
+						}
 					}
 
 					allComments = append(allComments, struct {
@@ -485,7 +509,8 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 			}
 		}
 
-		if !query.Repository.Discussions.PageInfo.HasNextPage {
+		fullyListed = !query.Repository.Discussions.PageInfo.HasNextPage
+		if maintenance.Requested(ctx) || fullyListed {
 			break
 		}
 		discussionVariables["discussionCursor"] = query.Repository.Discussions.PageInfo.EndCursor
@@ -502,6 +527,12 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 		}
 
 		base := "discussions.tar.gz"
+		if !useCache && !fullyListed {
+			// This fresh workdir holds only a partial listing. Publish it as
+			// a separate backup artifact and preserve the complete canonical
+			// archive until a future full no-cache sync can replace it.
+			base = "discussions.partial." + path.Base(workingDir) + ".tar.gz"
+		}
 
 		for _, s := range storages {
 			backend, err := storage.GetStorage(s)
@@ -520,5 +551,11 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 		ui.Printf("All is up to date, no need to restore")
 	}
 
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if maintenance.Requested(ctx) {
+		return maintenance.ErrRequested
+	}
 	return nil
 }

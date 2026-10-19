@@ -20,6 +20,7 @@ import (
 	"github.com/wnarutou/gitrieve/internal/archive"
 	internalconfig "github.com/wnarutou/gitrieve/internal/config"
 	"github.com/wnarutou/gitrieve/internal/lock"
+	"github.com/wnarutou/gitrieve/internal/maintenance"
 	"github.com/wnarutou/gitrieve/internal/scm"
 	"github.com/wnarutou/gitrieve/internal/scm/github"
 	"github.com/wnarutou/gitrieve/internal/storage"
@@ -109,13 +110,31 @@ func appendConcreteRepositories(ret []typedef.Repository, configured typedef.Rep
 }
 
 // Sync archives a repository's code (or wiki when iswiki is set). ctx bounds
-// every go-git network operation. Caller cancellation interrupts a job, while
-// the Git HTTP transport detects stalled reads without limiting total duration.
-func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []typedef.MultiStorage) error {
+// every go-git network operation. Caller cancellation and maintenance interrupt
+// network work; the HTTP transport detects idle reads without a total timeout.
+func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []typedef.MultiStorage) (resultErr error) {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if maintenance.Requested(ctx) {
+		return maintenance.ErrRequested
+	}
+	// Only an interruption caused by the soft signal is a maintenance stop.
+	// Real Git, archive and storage failures keep their original errors.
+	defer func() {
+		if ctx.Err() == nil && maintenance.Requested(ctx) && errors.Is(resultErr, context.Canceled) {
+			resultErr = maintenance.ErrRequested
+		}
+	}()
+	networkCtx, interrupt := maintenance.InterruptContext(ctx)
+	defer interrupt()
 	useCache := repo.UseCache
 	depth := repo.Depth
 	allBranches := repo.AllBranches
-	isUpdated := false
+	// A prior interruption may have updated local refs before publication.
+	// Republish successful cached syncs even without new upstream changes so
+	// those updates (and failed storage writes) cannot remain stranded.
+	isUpdated := useCache
 	// get current directory
 	currentDir, _ := os.Getwd()
 
@@ -158,7 +177,7 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 		component = "wiki"
 	}
 	ui.Printf("Sync phase: waiting for %s lock", component)
-	unlock, err := lock.Acquire(ctx, r, component, currentDir)
+	unlock, err := lock.Acquire(networkCtx, r, component, currentDir)
 	if err != nil {
 		return err
 	}
@@ -180,10 +199,10 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 		exist = true
 	}
 	var gitRepo *git.Repository
-	// Keep caller cancellation across clone, fetch, remote list, and pull.
+	// Keep caller cancellation and soft interruption across network operations.
 	// Network idle detection lives in the HTTP transport, so active transfers
 	// and local processing are not bounded by a fixed total timeout.
-	syncCtx := ctx
+	syncCtx := networkCtx
 	ui.Printf("Git network idle timeout: %s", gitNetworkIdleTimeout)
 	if deadline, ok := syncCtx.Deadline(); ok {
 		ui.Printf("Sync deadline: %s", deadline.UTC().Format(time.RFC3339))
@@ -316,6 +335,9 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 
 	// find all remote branches
 	if err := refs.ForEach(func(ref *plumbing.Reference) error {
+		if syncCtx.Err() != nil {
+			return syncCtx.Err()
+		}
 		if ref.Name().IsRemote() && ref.Type() == plumbing.HashReference {
 			// get remote branch name
 			remoteBranchName := ref.Name().Short()
@@ -482,6 +504,9 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	}
 
 	if isUpdated {
+		if maintenance.Requested(ctx) && ctx.Err() == nil {
+			return maintenance.ErrRequested
+		}
 		if syncCtx.Err() != nil {
 			// Cancelled after the network work — skip archiving/storing; the
 			// fetched objects are already preserved in the local cache.
@@ -498,7 +523,7 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 		// absolute path and never changes the process cwd, so it is safe to
 		// run from concurrent job goroutines.
 		ui.Printf("Sync phase: archive creation started")
-		buf, err := archive.Create(syncCtx, gitDir, targetDir)
+		buf, err := archive.Create(ctx, gitDir, targetDir)
 		if err != nil {
 			ui.Errorf("Error creating archive, %s", err)
 			return err
@@ -531,6 +556,11 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	if syncCtx.Err() != nil {
 		// Cancelled — stop before any remaining work (e.g. temp-dir cleanup).
 		return syncCtx.Err()
+	}
+	// Read the signal directly: its network-context forwarding goroutine may
+	// not have run yet when a request arrives during archive publication.
+	if maintenance.Requested(ctx) {
+		return maintenance.ErrRequested
 	}
 
 	// cleanup

@@ -8,6 +8,9 @@ services:
       dockerfile: Dockerfile
     container_name: gitrieve
     restart: unless-stopped
+    # Enter maintenance and wait for ready before upgrading. This is the
+    # fallback grace for SIGTERM while a page/file/archive is still finishing.
+    stop_grace_period: 10m
     environment:
       # set the timezone to be used by cron schedule
       # see https://en.wikipedia.org/wiki/List_of_tz_database_time_zones

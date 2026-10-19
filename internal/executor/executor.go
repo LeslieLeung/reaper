@@ -15,6 +15,7 @@ import (
 	"github.com/wnarutou/gitrieve/internal/db"
 	"github.com/wnarutou/gitrieve/internal/githubapi"
 	"github.com/wnarutou/gitrieve/internal/logger"
+	"github.com/wnarutou/gitrieve/internal/maintenance"
 	"github.com/wnarutou/gitrieve/internal/repository"
 	"github.com/wnarutou/gitrieve/internal/syncresult"
 	"github.com/wnarutou/gitrieve/internal/typedef"
@@ -32,11 +33,12 @@ const (
 )
 
 type JobContext struct {
-	Ctx        context.Context
-	CancelFunc context.CancelFunc
-	done       chan struct{}
-	repoKey    string
-	cancelled  bool
+	Ctx         context.Context
+	CancelFunc  context.CancelFunc
+	done        chan struct{}
+	repoKey     string
+	cancelled   bool
+	maintenance *maintenance.Signal
 }
 
 type queuedJob struct {
@@ -101,6 +103,12 @@ type Executor struct {
 	limit             int
 	inflight          int
 	closed            bool
+	maintenance       bool
+	shuttingDown      bool
+	maintenanceErr    error
+	settling          int
+	preparations      map[uint64]context.CancelFunc
+	nextPreparation   uint64
 	dispatcherStarted bool
 	dispatcherDone    chan struct{}
 	closeDone         chan struct{}
@@ -313,7 +321,26 @@ func (e *Executor) ExecuteJobAtGenerationIfEligibleContext(ctx context.Context, 
 	return e.executeJobFromSnapshot(ctx, runtime, repoKey, &generation, eligible)
 }
 
-func (e *Executor) executeJobFromSnapshot(admissionCtx context.Context, runtime *RuntimeConfigSnapshot, repoKey string, expectedGeneration *uint64, eligible EligibilityCheck) ([]string, error) {
+func (e *Executor) executeJobFromSnapshot(admissionCtx context.Context, runtime *RuntimeConfigSnapshot, repoKey string, expectedGeneration *uint64, eligible EligibilityCheck) (ids []string, err error) {
+	parent := admissionCtx
+	var finish func()
+	admissionCtx, finish, err = e.beginPreparation(admissionCtx)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	defer func() {
+		if err == nil || admissionCtx.Err() == nil || parent.Err() != nil {
+			return
+		}
+		e.queueMu.Lock()
+		defer e.queueMu.Unlock()
+		if e.closed {
+			err = errors.Join(ErrExecutorClosed, err)
+		} else if e.maintenance {
+			err = errors.Join(ErrMaintenance, err)
+		}
+	}()
 	repo, found := runtime.Repository(repoKey)
 	if !found {
 		return nil, ErrRepositoryNotFound
@@ -341,7 +368,8 @@ func (e *Executor) executeJobFromSnapshot(admissionCtx context.Context, runtime 
 func (e *Executor) submitBatch(admissionCtx context.Context, runtime *RuntimeConfigSnapshot, configured typedef.Repository, repositories []typedef.Repository, expectedGeneration *uint64, eligible EligibilityCheck) ([]string, error) {
 	prepared := make([]*preparedJob, len(repositories))
 	for i, repo := range repositories {
-		ctx, cancel := context.WithCancel(runtime.executionContext(context.Background()))
+		signal := maintenance.NewSignal()
+		ctx, cancel := context.WithCancel(maintenance.WithSignal(runtime.executionContext(context.Background()), signal))
 		jobID := uuid.New().String()
 		plan := componentPlan(repo, e.runners)
 		prepared[i] = &preparedJob{
@@ -353,10 +381,11 @@ func (e *Executor) submitBatch(admissionCtx context.Context, runtime *RuntimeCon
 				plan:     plan,
 			},
 			jobContext: &JobContext{
-				Ctx:        ctx,
-				CancelFunc: cancel,
-				done:       make(chan struct{}),
-				repoKey:    repo.Key(),
+				Ctx:         ctx,
+				maintenance: signal,
+				CancelFunc:  cancel,
+				done:        make(chan struct{}),
+				repoKey:     repo.Key(),
 			},
 		}
 	}
@@ -400,14 +429,18 @@ func (e *Executor) submitBatch(admissionCtx context.Context, runtime *RuntimeCon
 		}
 		return nil, err
 	}
-	if e.closed {
+	if e.closed || e.maintenance {
+		admissionErr := ErrExecutorClosed
+		if e.maintenance {
+			admissionErr = ErrMaintenance
+		}
 		e.queueMu.Unlock()
 		discardErr := e.discardBatch(prepared)
 		e.releaseBatch(prepared, discardErr)
 		if discardErr != nil {
-			return nil, errors.Join(ErrExecutorClosed, discardErr)
+			return nil, errors.Join(admissionErr, discardErr)
 		}
-		return nil, ErrExecutorClosed
+		return nil, admissionErr
 	}
 	jobIDs := make([]string, len(prepared))
 	for i, job := range prepared {
@@ -466,6 +499,9 @@ func (e *Executor) reserveBatchWithinPublication(ctx context.Context, prepared [
 	}
 	if e.closed {
 		return ErrExecutorClosed
+	}
+	if e.maintenance {
+		return ErrMaintenance
 	}
 	seen := make(map[string]struct{}, len(prepared))
 	for _, job := range prepared {
@@ -534,6 +570,9 @@ func (e *Executor) releaseBatch(prepared []*preparedJob, closeErr error) {
 	e.queueMu.Lock()
 	if closeErr != nil {
 		e.closeErr = errors.Join(e.closeErr, closeErr)
+		if e.maintenance {
+			e.maintenanceErr = errors.Join(e.maintenanceErr, closeErr)
+		}
 	}
 	for _, job := range prepared {
 		job.jobContext.CancelFunc()
@@ -558,7 +597,7 @@ func (e *Executor) dispatch() {
 	defer close(e.dispatcherDone)
 	for {
 		e.queueMu.Lock()
-		for !e.closed && (len(e.pending) == 0 || e.running >= e.limit) {
+		for !e.closed && (e.maintenance || len(e.pending) == 0 || e.running >= e.limit) {
 			e.queueCond.Wait()
 		}
 		if e.closed {
@@ -599,6 +638,8 @@ func (e *Executor) finishAdmissionFailure(job *queuedJob, admissionErr error) {
 	}
 	if allTerminal {
 		e.finishExecution(job.id, StatusFailed, message)
+	} else {
+		e.recordMaintenanceError(errors.New(message))
 	}
 }
 
@@ -611,6 +652,7 @@ func (e *Executor) completeRunningJob(jobID, repoKey string) {
 	}
 	e.running--
 	if jobCtx != nil {
+		jobCtx.CancelFunc()
 		close(jobCtx.done)
 	}
 	e.queueCond.Broadcast()
@@ -635,6 +677,10 @@ func (e *Executor) executeAsync(ctx context.Context, jobID string, job typedef.R
 	failures := make([]string, 0)
 	allComponentsTerminal := true
 	for i, planned := range plan {
+		if maintenance.Requested(ctx) && ctx.Err() == nil {
+			e.finishMaintenance(jobID, plan, i, failures, allComponentsTerminal)
+			return
+		}
 		if ctx.Err() != nil {
 			e.finishCancellation(jobID, plan, i, ctx.Err())
 			return
@@ -662,6 +708,10 @@ func (e *Executor) executeAsync(ctx context.Context, jobID string, job typedef.R
 			return
 		}
 
+		if errors.Is(runErr, maintenance.ErrRequested) {
+			e.finishMaintenance(jobID, plan, i, failures, allComponentsTerminal)
+			return
+		}
 		status := db.ComponentCompleted
 		errorMessage := ""
 		if reason, skipped := syncresult.SkippedReason(runErr); skipped {
@@ -690,6 +740,7 @@ func (e *Executor) executeAsync(ctx context.Context, jobID string, job typedef.R
 
 	if !allComponentsTerminal {
 		ui.Errorf("Job cannot be finalized while component rows remain active")
+		e.recordMaintenanceError(errors.New("cannot finalize execution while component rows remain active"))
 		return
 	}
 	if len(failures) != 0 {
@@ -726,13 +777,18 @@ func (e *Executor) finishCancellation(jobID string, plan []component, first int,
 	ui.Printf("Job was cancelled")
 	if !allTerminal {
 		ui.Errorf("Job cannot be finalized while component rows remain active")
+		e.recordMaintenanceError(errors.New("cannot finalize execution while component rows remain active"))
 		return
 	}
 	if len(failures) != 0 {
 		e.finishExecution(jobID, StatusFailed, strings.Join(failures, "; "))
 		return
 	}
-	e.finishExecution(jobID, StatusCancelled, "")
+	message := ""
+	if errors.Is(cancelErr, maintenance.ErrRequested) {
+		message = maintenance.ErrRequested.Error()
+	}
+	e.finishExecution(jobID, StatusCancelled, message)
 }
 
 func (e *Executor) cancelComponents(jobID string, plan []component, first int, cancelErr error) ([]string, bool) {
@@ -763,12 +819,14 @@ func (e *Executor) finishExecution(jobID string, status ExecutionStatus, errorMe
 	if err := e.updateJobStatus(jobID, string(status), errorMessage); err != nil {
 		ui.Errorf("Failed to finish job as %s: %v", status, err)
 		if status == StatusFailed {
+			e.recordMaintenanceError(err)
 			return
 		}
 
 		failureMessage := fmt.Sprintf("persist %s execution state: %v", status, err)
 		if fallbackErr := e.updateJobStatus(jobID, string(StatusFailed), failureMessage); fallbackErr != nil {
 			ui.Errorf("Failed to record overall execution store failure: %v", fallbackErr)
+			e.recordMaintenanceError(fallbackErr)
 		}
 	}
 }
@@ -804,10 +862,12 @@ func (e *Executor) CancelJob(jobID string) error {
 			delete(e.activeByRepo, jobCtx.repoKey)
 		}
 		e.workers.Add(1)
+		e.settling++
 		e.queueCond.Broadcast()
 		e.queueMu.Unlock()
 
 		defer e.workers.Done()
+		defer func() { e.queueMu.Lock(); e.settling--; e.queueCond.Broadcast(); e.queueMu.Unlock() }()
 		e.finishQueuedCancellation(pending)
 		close(jobCtx.done)
 		return nil
@@ -851,6 +911,9 @@ func (e *Executor) Close() error {
 	}
 
 	e.closed = true
+	for _, cancel := range e.preparations {
+		cancel()
+	}
 	pending := e.pending
 	e.pending = nil
 	pendingContexts := make(map[string]*JobContext, len(pending))
@@ -885,7 +948,7 @@ func (e *Executor) Close() error {
 	e.workers.Wait()
 
 	e.queueMu.Lock()
-	for e.inflight != 0 {
+	for e.inflight != 0 || len(e.preparations) != 0 {
 		e.queueCond.Wait()
 	}
 	close(e.closeDone)
