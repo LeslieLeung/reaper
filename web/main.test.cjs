@@ -76,6 +76,26 @@ test('server shutdown cannot be reversed from the maintenance control', async ()
     assert.equal(h.requests.length,1);
 });
 
+test('stuck repository badges retain the active execution status', () => {
+    const context = vm.createContext({
+        document: { addEventListener() {} },
+        window: { addEventListener() {}, GitrievePagination: pagination },
+    });
+    vm.runInContext(fs.readFileSync(path.join(__dirname, 'static/js/main.js'), 'utf8'), context);
+    for (const status of ['running', 'pending']) {
+        context.repo = { health_status: 'stuck', last_status: status, stuck: true };
+        const html = vm.runInContext('repositoryHealthBadge(repo)', context);
+        const labels = [...html.matchAll(/<span\b[^>]*>([^<]*)<\/span>/g)].map(match => match[1]);
+        assert.deepEqual(labels, [status, 'stuck']);
+    }
+    for (const health of ['running', 'pending', 'healthy', 'failed', 'overdue', 'never_synced']) {
+        context.repo = { health_status: health, last_status: health, stuck: false };
+        const html = vm.runInContext('repositoryHealthBadge(repo)', context);
+        const labels = [...html.matchAll(/<span\b[^>]*>([^<]*)<\/span>/g)].map(match => match[1]);
+        assert.deepEqual(labels, [health]);
+    }
+});
+
 test('renders repository actions before the repository name', async () => {
     const app = { innerHTML: '' };
     const control = () => ({

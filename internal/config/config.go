@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,8 @@ type Config struct {
 	Repository                  []typedef.Repository   `yaml:"repository"`
 	Storage                     []typedef.MultiStorage `yaml:"storage"`
 	GitHubToken                 string                 `yaml:"githubToken"`
+	GitHubAccounts              []githubapi.Account    `yaml:"githubAccounts" mapstructure:"githubAccounts"`
+	GitHubAccountConcurrency    uint                   `yaml:"githubAccountConcurrency" mapstructure:"githubAccountConcurrency"`
 	ConcurrencyNum              uint                   `yaml:"cocurrencyNum" mapstructure:"cocurrencyNum"`
 	ReleaseSizeLimit            int                    `yaml:"releaseSizeLimit"`
 	ReleaseNumLimit             int                    `yaml:"releaseNumLimit"`
@@ -86,14 +89,14 @@ var configPublicationReadHookForTest atomic.Pointer[configPublicationReadTestHoo
 func Init() {
 	nextViper := viper.New()
 	nextViper.SetConfigFile(Path)
-	err := nextViper.ReadInConfig()
+	err := readConfigFile(nextViper)
 	if err != nil {
 		ui.ErrorfExit("Error reading config file, %s", err)
 	}
 	var next Config
 	err = nextViper.Unmarshal(&next)
 	if err != nil {
-		ui.ErrorfExit("Error unmarshalling config file, %s", err)
+		ui.ErrorfExit("Error unmarshalling config file: check configuration field types")
 	}
 	seedDefaults(&next)
 	if !nextViper.IsSet("githubScheduleJitter") {
@@ -103,11 +106,23 @@ func Init() {
 	if err := validateIdentity(&next); err != nil {
 		ui.ErrorfExit("Invalid configuration: %s", err)
 	}
+	if err := validateStorages(next.Storage); err != nil {
+		ui.ErrorfExit("Invalid configuration: %s", err)
+	}
 	snapshot := Clone(&next)
 	stateMu.Lock()
 	vp = nextViper
 	setInsLocked(snapshot)
 	stateMu.Unlock()
+}
+
+func validateStorages(storages []typedef.MultiStorage) error {
+	for _, storage := range storages {
+		if err := storage.ValidateType(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // seedDefaults fills zero-valued global options with their defaults. It runs in
@@ -139,6 +154,9 @@ func seedDefaults(cfg *Config) {
 	if cfg.GitHubAPIConcurrency == 0 {
 		cfg.GitHubAPIConcurrency = 2
 	}
+	if cfg.GitHubAccountConcurrency == 0 {
+		cfg.GitHubAccountConcurrency = 2
+	}
 	if cfg.GitHubMinRequestInterval <= 0 {
 		cfg.GitHubMinRequestInterval = 200 * time.Millisecond
 	}
@@ -162,6 +180,7 @@ func Clone(cfg *Config) *Config {
 		cloned.Repository[index] = repository
 	}
 	cloned.Storage = append([]typedef.MultiStorage(nil), cfg.Storage...)
+	cloned.GitHubAccounts = append([]githubapi.Account(nil), cfg.GitHubAccounts...)
 	return &cloned
 }
 
@@ -372,6 +391,25 @@ func GetGitHubLowRemainingThreshold() int { return currentConfig().GitHubLowRema
 
 func GetGitHubScheduleJitter() time.Duration { return currentConfig().GitHubScheduleJitter }
 
+// GetGitHubAccountsContext returns detached credentials for the execution's
+// generation. Only the small pool slice is copied, not the repository list.
+// A nonempty explicit pool takes precedence over the legacy token.
+func GetGitHubAccountsContext(ctx context.Context) []githubapi.Account {
+	cfg := executionConfig(ctx)
+	if len(cfg.GitHubAccounts) > 0 {
+		accounts := append([]githubapi.Account(nil), cfg.GitHubAccounts...)
+		for i := range accounts {
+			accounts[i].Name = strings.TrimSpace(accounts[i].Name)
+			accounts[i].Token = strings.TrimSpace(accounts[i].Token)
+		}
+		return accounts
+	}
+	if token := strings.TrimSpace(cfg.GitHubToken); token != "" {
+		return []githubapi.Account{{Token: token}}
+	}
+	return nil
+}
+
 func GetGitHubAPIConfig() githubapi.Config {
 	return gitHubAPIConfig(currentConfig())
 }
@@ -385,7 +423,7 @@ func gitHubAPIConfig(cfg *Config) githubapi.Config {
 	if cfg == nil {
 		return githubapi.Config{}
 	}
-	return githubapi.Config{Concurrency: cfg.GitHubAPIConcurrency, MinRequestInterval: cfg.GitHubMinRequestInterval, LowRemainingThreshold: cfg.GitHubLowRemainingThreshold}
+	return githubapi.Config{Concurrency: cfg.GitHubAPIConcurrency, AccountConcurrency: cfg.GitHubAccountConcurrency, MinRequestInterval: cfg.GitHubMinRequestInterval, LowRemainingThreshold: cfg.GitHubLowRemainingThreshold}
 }
 
 // GetRetryConfig assembles the retry configuration used by every GitHub API
@@ -417,6 +455,9 @@ func executionConfig(ctx context.Context) *Config {
 // Returns an error rather than exiting so it is unit-testable; Init surfaces
 // it via ui.ErrorfExit.
 func validateIdentity(cfg *Config) error {
+	if errs := validateGitHubAccounts(cfg.GitHubAccounts); len(errs) > 0 {
+		return fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
 	for _, repo := range cfg.Repository {
 		if repo.Key() == "" {
 			return fmt.Errorf("repository %q (type %q) has an empty URL and no orgName; every repository needs a URL identity",
@@ -454,6 +495,8 @@ func saveSnapshotLocked(cfg *Config) error {
 	vp.Set("repository", cfg.Repository)
 	vp.Set("storage", cfg.Storage)
 	vp.Set("githubToken", cfg.GitHubToken)
+	vp.Set("githubAccounts", cfg.GitHubAccounts)
+	vp.Set("githubAccountConcurrency", cfg.GitHubAccountConcurrency)
 	vp.Set("cocurrencyNum", cfg.ConcurrencyNum)
 	vp.Set("releaseSizeLimit", cfg.ReleaseSizeLimit)
 	vp.Set("releaseNumLimit", cfg.ReleaseNumLimit)

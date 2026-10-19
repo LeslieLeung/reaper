@@ -24,7 +24,7 @@ Git Retrieve(gitrieve) is a tool to archive repositories from any Git servers.
 - Archive repositories from any Git servers
 - Archive repositories of a user/an organization (see [Configuration](https://github.com/wnarutou/gitrieve/wiki/Configuration#repository))
 - Cron support
-- Multiple storage types (see [Storage](#storage))
+- Local file storage (see [Storage](#storage))
 - **Deletion-safe sync** — local cached code and full history are never deleted by a sync, even when the upstream repo is taken down, DMCA-disabled, deleted, or replaced with a single README (see [Deletion-safe sync](#deletion-safe-sync))
 - Docker support (see [Run as docker container](#run-as-docker-container))
 
@@ -47,7 +47,6 @@ repository:
     cron: "0 * * * *"
     storage:
       - localFile
-      - backblaze
     useCache: True
     allBranches: True
     depth: 0
@@ -60,13 +59,6 @@ storage:
   - name: localFile
     type: file
     path: ./repo
-  - name: backblaze
-    type: s3
-    endpoint: s3.us-west-000.backblazeb2.com
-    region: us-west-000
-    bucket: your-bucket-name
-    accessKeyID: your-access-key-id
-    secretAccessKey: your-secret-access-key
 ```
 
 Then you can run gitrieve with the configuration file.
@@ -80,6 +72,12 @@ gitrieve
 ### repository
 
 `repository` archives a single repository defined in configuration.
+
+Git clone, fetch, pull, and remote-reference queries have no fixed total time
+limit. A network read fails only after five minutes without receiving any
+bytes; incoming data renews that window even without progress messages.
+Local decoding, checkout, and archiving are not subject to this network timeout.
+Cancelling a job still interrupts its network operations.
 
 ```bash
 gitrieve repository gitrieve
@@ -124,6 +122,14 @@ gitrieve server
 
 From the UI you can trigger archive jobs, view real-time logs, and edit repository/storage configuration without touching `config.yaml` by hand. Repository cron schedules are refreshed immediately after repository edits, config imports, and config reloads. The server is configured via an optional `server` section in `config.yaml` (host, port, and optional bearer-token auth).
 
+Execution logs are cleaned in the background at startup and every 24 hours.
+Set `server.logRetentionMonths` to the number of calendar months to retain
+(default: `2`; non-positive values use the default). Cleanup removes all logs
+belonging to terminal jobs whose **end time** precedes the cutoff. Active jobs,
+jobs without an end time, and jobs ending exactly at the cutoff retain their
+logs. Job history and component outcomes remain available. Restart or reload
+configuration after changing the setting; the next cleanup pass uses the new value.
+
 The Repositories page provides server-side health counts, failed/never/overdue/
 stuck filters, attention-first sorting, component detail, and safe bulk retry.
 It distinguishes the latest attempt from the latest fully successful backup.
@@ -138,19 +144,33 @@ See the [Web UI guide](docs/web-ui.md) and the [API reference](docs/api.md) for 
 
 ## Configuration
 
-GitHub API traffic from issues, discussions, and releases is coordinated within each gitrieve process. Optional settings and defaults:
+GitHub API traffic is coordinated within each gitrieve process. This example uses tokens belonging to two different GitHub users:
 
 ```yaml
-githubApiConcurrency: 2
+githubAccounts:
+  - name: alice
+    token: alice-personal-access-token
+  - name: bob
+    token: bob-personal-access-token
+githubApiConcurrency: 4
+githubAccountConcurrency: 2
 githubMinRequestInterval: 200ms
 githubLowRemainingThreshold: 100
 githubScheduleJitter: 30s
 syncOverdueGrace: 30m
 syncStuckThreshold: 24h
-cocurrencyNum: 6
+cocurrencyNum: 12
 ```
 
-`githubScheduleJitter: 0s` disables staggering. Staggering applies only to daemon cron jobs; manual commands and Web API jobs start immediately. These settings reduce bursts but do not increase GitHub quota and do not coordinate separate processes or hosts.
+`githubAccounts` defaults to an empty list. A nonempty pool takes precedence over `githubToken`; otherwise the legacy token is used, or REST runs anonymously when no token is set. Account names and tokens must be nonblank, and names must be unique. Each pool account has a concurrency cap (`githubAccountConcurrency`, default `2`); all accounts also share the process-wide cap (`githubApiConcurrency`, default `2`). Legacy single-token authentication retains its global-only concurrency cap. `cocurrencyNum` limits concurrent repository jobs, independently of these API limits.
+
+REST and GraphQL share pacing and concurrency for each credential. `githubMinRequestInterval` spaces request starts per credential, while primary quota pauses apply to the affected account and API resource. A secondary rate limit pauses the whole process. Duplicate tokens share the same limits, and multiple tokens for one GitHub user share that user's quota. A pool of different users can use their aggregate available quotas; it does not increase any user's GitHub quota. For private repositories, pool users need access and their tokens need the required permissions; an account without access may fall back to another eligible account.
+
+HTTPS Git operations for GitHub code repositories and wikis also use the account pool. Each clone, fetch, remote-reference listing, and pull keeps one credential for its entire attempt. Authentication, authorization, or repository-not-found errors corresponding to 401, 403, or 404 rotate through distinct tokens in configured order, with at most one attempt per token for that operation. Later operations in the same job prefer the last successful account. If every account is denied, the job fails and account rotation does not delete an existing cache; failed fresh clone directories are cleaned before another attempt. Without credentials, Git remains anonymous; GitHub tokens are never sent to other repository hosts. Git transfers use repository-job concurrency and do not occupy API concurrency slots. Private-repository tokens also need permission to read code.
+
+Import previews keep account labels and mask every token. The `existing` and `imported` global choices apply separately to `githubAccounts` and `githubAccountConcurrency`; exports and saved configuration contain the actual tokens.
+
+`githubScheduleJitter: 0s` disables staggering. Staggering applies only to daemon cron jobs; manual commands and Web API jobs start immediately. Pacing and concurrency settings reduce bursts; coordination does not extend to separate processes or hosts.
 
 `syncOverdueGrace` and `syncStuckThreshold` default to `30m` and `24h`;
 the stuck threshold applies to both pending and running executions, and
@@ -167,10 +187,9 @@ For more details, see [Configuration](https://github.com/wnarutou/gitrieve/wiki/
 
 ## Storage
 
-gitrieve supports multiple storage types.
+gitrieve currently supports local file storage only. S3-compatible storage is no longer supported; existing configurations with `type: s3` must be changed to `type: file` with a local `path` before starting, reloading, or importing configuration.
 
 - [x] File
-- [x] AWS S3
 
 ## Deletion-safe sync
 
@@ -188,7 +207,7 @@ Recommended configuration for maximum recoverability:
 - `allBranches: true` — ensures every branch's commits are pulled into the local object store.
 - `useCache: true` — keeps the local cache directory (with its `.git`) across syncs as an extra on-disk safety net (without it the working dir is removed at the end of each sync).
 
-One caveat to be aware of: archiving writes to a fixed filename (e.g. `repo.tar.gz`) and overwrites any previous archive at the same path. So if an upstream is still reachable but its default branch has been rewritten to a single README, the *new* snapshot will replace the previous normal one at that path. Local cached code and history are still safe (see above), but to preserve distinct historical snapshots you should enable versioning on your object storage (S3/B2) or otherwise keep archives under versioned paths.
+One caveat to be aware of: archiving writes to a fixed filename (e.g. `repo.tar.gz`) and overwrites any previous archive at the same path. So if an upstream is still reachable but its default branch has been rewritten to a single README, the *new* snapshot will replace the previous normal one at that path. Local cached code and history are still safe (see above), but to preserve distinct historical snapshots you should keep separate copies of archives under versioned paths.
 
 ## Run as docker container
 

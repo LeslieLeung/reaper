@@ -3,6 +3,7 @@ package issue
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path"
 	"strings"
@@ -32,6 +33,32 @@ func newIssueListOptions(lastUpdate time.Time) *gh.IssueListByRepoOptions {
 			PerPage: 100,
 		},
 	}
+}
+
+// nextIssuePageURL preserves the complete next link, including opaque cursors.
+// NextPage alone loses after/before parameters and cannot identify cursor-only pages.
+func nextIssuePageURL(resp *gh.Response) string {
+	for _, header := range resp.Header.Values("Link") {
+		for _, link := range strings.Split(header, ",") {
+			segments := strings.Split(link, ";")
+			target := strings.TrimSpace(segments[0])
+			if !strings.HasPrefix(target, "<") || !strings.HasSuffix(target, ">") {
+				continue
+			}
+			for _, parameter := range segments[1:] {
+				name, value, ok := strings.Cut(parameter, "=")
+				if !ok || strings.TrimSpace(name) != "rel" {
+					continue
+				}
+				for _, relation := range strings.Fields(strings.Trim(strings.TrimSpace(value), `"`)) {
+					if relation == "next" {
+						return target[1 : len(target)-1]
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.MultiStorage) error {
@@ -164,10 +191,11 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 	}
 	opt := newIssueListOptions(lastUpdate)
 
-	cfg := config.GetExecutionConfig(ctx)
-	client := gh.NewClient(nil).WithAuthToken(cfg.GitHubToken)
+	accounts := config.GetGitHubAccountsContext(ctx)
+	baseClient := gh.NewClient(nil)
+	var nextURL string
 	fullyListed := false
-	for {
+	for page := 1; ; page++ {
 		if maintenance.Requested(ctx) {
 			break
 		}
@@ -176,20 +204,26 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 			resp   *gh.Response
 		)
 		err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-			permit, acquireErr := githubapi.Acquire(ctx, "core")
-			if acquireErr != nil {
-				return acquireErr
-			}
-			var apiErr error
-			issues, resp, apiErr = client.Issues.ListByRepo(ctx, r.Owner, r.Name, opt)
-			permit.Done(githubapi.ObserveREST(resp, apiErr))
-			return apiErr
+			return githubapi.Do(ctx, "core", accounts, func(token string) (githubapi.Observation, error) {
+				client := githubapi.NewREST(baseClient, token)
+				var apiErr error
+				if nextURL == "" {
+					issues, resp, apiErr = client.Issues.ListByRepo(ctx, r.Owner, r.Name, opt)
+				} else {
+					var req *http.Request
+					req, apiErr = client.NewRequest(http.MethodGet, nextURL, nil)
+					if apiErr == nil {
+						resp, apiErr = client.Do(ctx, req, &issues)
+					}
+				}
+				return githubapi.ObserveREST(resp, apiErr), apiErr
+			})
 		})
 		if err != nil {
 			ui.Errorf("Error fetching issues, %s", err)
 			return err
 		}
-		ui.Printf("Fetching page %d, total %d issues", opt.Page, len(issues))
+		ui.Printf("Fetching page %d, total %d issues", page, len(issues))
 
 		// Verified that for each issue, if the issue or any comment under it is updated, the issue's update time will be updated
 		// Traverse all issues
@@ -208,14 +242,12 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 					resp     *gh.Response
 				)
 				err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-					permit, acquireErr := githubapi.Acquire(ctx, "core")
-					if acquireErr != nil {
-						return acquireErr
-					}
-					var apiErr error
-					comments, resp, apiErr = client.Issues.ListComments(ctx, r.Owner, r.Name, issue.GetNumber(), commentsOpt)
-					permit.Done(githubapi.ObserveREST(resp, apiErr))
-					return apiErr
+					return githubapi.Do(ctx, "core", accounts, func(token string) (githubapi.Observation, error) {
+						client := githubapi.NewREST(baseClient, token)
+						var apiErr error
+						comments, resp, apiErr = client.Issues.ListComments(ctx, r.Owner, r.Name, issue.GetNumber(), commentsOpt)
+						return githubapi.ObserveREST(resp, apiErr), apiErr
+					})
 				})
 				if err != nil {
 					ui.Errorf("Error fetching comments of issue %d, %s", issue.GetNumber(), err)
@@ -278,11 +310,11 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 			}
 		}
 
-		fullyListed = resp.NextPage == 0
+		nextURL = nextIssuePageURL(resp)
+		fullyListed = nextURL == ""
 		if maintenance.Requested(ctx) || fullyListed {
 			break
 		}
-		opt.Page = resp.NextPage
 	}
 
 	if isUpdated {

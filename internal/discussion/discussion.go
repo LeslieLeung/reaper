@@ -73,10 +73,11 @@ type rateLimitData struct {
 }
 
 func graphQLObservation(rate rateLimitData, err error) githubapi.Observation {
-	if err != nil {
-		return githubapi.ObserveError(err)
+	obs := githubapi.ObserveError(err)
+	if !rate.ResetAt.Time.IsZero() {
+		obs.Resource, obs.Used, obs.Remaining, obs.Reset = "graphql", int(rate.Cost), int(rate.Remaining), rate.ResetAt.Time
 	}
-	return githubapi.Observation{Resource: "graphql", Used: int(rate.Cost), Remaining: int(rate.Remaining), Reset: rate.ResetAt.Time}
+	return obs
 }
 
 // Discussion list query
@@ -277,12 +278,11 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 		ui.Printf("The latest update time among all discussions is: %s", lastUpdate)
 	}
 
-	cfg := config.GetExecutionConfig(ctx)
-	src := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: cfg.GitHubToken},
-	)
-	httpClient := oauth2.NewClient(context.Background(), src)
-	client := githubv4.NewClient(httpClient)
+	accounts := config.GetGitHubAccountsContext(ctx)
+	newClient := func(token string) *githubv4.Client {
+		src := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token})
+		return githubv4.NewClient(oauth2.NewClient(ctx, src))
+	}
 
 	// Initialize variables for discussion list query
 	discussionVariables := map[string]interface{}{
@@ -300,13 +300,11 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 		}
 		var query discussionsQuery
 		err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-			permit, acquireErr := githubapi.Acquire(ctx, "graphql")
-			if acquireErr != nil {
-				return acquireErr
-			}
-			apiErr := client.Query(ctx, &query, discussionVariables)
-			permit.Done(graphQLObservation(query.RateLimit, apiErr))
-			return apiErr
+			return githubapi.Do(ctx, "graphql", accounts, func(token string) (githubapi.Observation, error) {
+				query = discussionsQuery{}
+				apiErr := newClient(token).Query(ctx, &query, discussionVariables)
+				return graphQLObservation(query.RateLimit, apiErr), apiErr
+			})
 		})
 		if err != nil {
 			ui.Errorf("Error fetching discussions: %s", err)
@@ -351,22 +349,20 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 
 			// Fetch comments
 			for {
-				var commentsQuery commentsQuery
+				var commentQuery commentsQuery
 				err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-					permit, acquireErr := githubapi.Acquire(ctx, "graphql")
-					if acquireErr != nil {
-						return acquireErr
-					}
-					apiErr := client.Query(ctx, &commentsQuery, commentVariables)
-					permit.Done(graphQLObservation(commentsQuery.RateLimit, apiErr))
-					return apiErr
+					return githubapi.Do(ctx, "graphql", accounts, func(token string) (githubapi.Observation, error) {
+						commentQuery = commentsQuery{}
+						apiErr := newClient(token).Query(ctx, &commentQuery, commentVariables)
+						return graphQLObservation(commentQuery.RateLimit, apiErr), apiErr
+					})
 				})
 				if err != nil {
 					ui.Errorf("Error fetching comments for discussion %d: %s", discussion.Number, err)
 					return err
 				}
 
-				for _, comment := range commentsQuery.Repository.Discussion.Comments.Nodes {
+				for _, comment := range commentQuery.Repository.Discussion.Comments.Nodes {
 					// Initialize variables for reply query
 					replyVariables := map[string]interface{}{
 						"owner":         githubv4.String(r.Owner),
@@ -391,15 +387,13 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 
 					// Fetch replies
 					for {
-						var repliesQuery repliesQuery
+						var replyQuery repliesQuery
 						err := retry.Do(ctx, config.GetRetryConfigContext(ctx), func() error {
-							permit, acquireErr := githubapi.Acquire(ctx, "graphql")
-							if acquireErr != nil {
-								return acquireErr
-							}
-							apiErr := client.Query(ctx, &repliesQuery, replyVariables)
-							permit.Done(graphQLObservation(repliesQuery.RateLimit, apiErr))
-							return apiErr
+							return githubapi.Do(ctx, "graphql", accounts, func(token string) (githubapi.Observation, error) {
+								replyQuery = repliesQuery{}
+								apiErr := newClient(token).Query(ctx, &replyQuery, replyVariables)
+								return graphQLObservation(replyQuery.RateLimit, apiErr), apiErr
+							})
 						})
 						if err != nil {
 							ui.Errorf("Error fetching replies for comment %d: %s", comment.DatabaseId, err)
@@ -408,7 +402,7 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 
 						// Find matching comment
 						found, hasNextPage := false, false
-						for _, c := range repliesQuery.Repository.Discussion.Comments.Nodes {
+						for _, c := range replyQuery.Repository.Discussion.Comments.Nodes {
 							if c.DatabaseId == comment.DatabaseId {
 								found = true
 								allReplies = append(allReplies, c.Replies.Nodes...)
@@ -455,10 +449,10 @@ func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.Multi
 					})
 				}
 
-				if !commentsQuery.Repository.Discussion.Comments.PageInfo.HasNextPage {
+				if !commentQuery.Repository.Discussion.Comments.PageInfo.HasNextPage {
 					break
 				}
-				commentVariables["commentCursor"] = commentsQuery.Repository.Discussion.Comments.PageInfo.EndCursor
+				commentVariables["commentCursor"] = commentQuery.Repository.Discussion.Comments.PageInfo.EndCursor
 			}
 
 			// Write to file

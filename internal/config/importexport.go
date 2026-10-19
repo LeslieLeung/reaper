@@ -1,27 +1,109 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
+	"github.com/wnarutou/gitrieve/internal/githubapi"
 	"github.com/wnarutou/gitrieve/internal/typedef"
 	"gopkg.in/yaml.v3"
 )
 
-var readConfigFile = func(v *viper.Viper) error { return v.ReadInConfig() }
+var readConfigFile = func(v *viper.Viper) error {
+	content, err := os.ReadFile(v.ConfigFileUsed())
+	if err != nil {
+		return err
+	}
+	if _, err := parseConfigYAML(content); err != nil {
+		return err
+	}
+	// Decode exactly the validated bytes; re-reading the file could admit a
+	// different generation. Generic decoder diagnostics can contain credentials.
+	if err := v.ReadConfig(bytes.NewReader(content)); err != nil {
+		return fmt.Errorf("invalid configuration field structure")
+	}
+	return nil
+}
+
+// parseConfigYAML checks credential shapes without formatting source values.
+// Aliases are supported; unexpected decoder failures are also sanitized by the
+// callers, so merge keys or other YAML constructs cannot expose raw secrets.
+func parseConfigYAML(content []byte) (*yaml.Node, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(content, &root); err != nil {
+		return nil, fmt.Errorf("invalid YAML syntax")
+	}
+	if len(root.Content) == 0 {
+		return &root, nil
+	}
+	document := resolveYAMLNode(root.Content[0])
+	if document == nil || document.Kind != yaml.MappingNode {
+		if document != nil && document.Tag == "!!null" {
+			return &root, nil
+		}
+		return nil, fmt.Errorf("configuration must be a mapping")
+	}
+	for i := 0; i+1 < len(document.Content); i += 2 {
+		if !strings.EqualFold(document.Content[i].Value, "githubAccounts") {
+			continue
+		}
+		pool := resolveYAMLNode(document.Content[i+1])
+		if pool != nil && pool.Tag == "!!null" {
+			continue
+		}
+		if pool == nil || pool.Kind != yaml.SequenceNode {
+			return nil, fmt.Errorf("githubAccounts must be a list (line %d)", document.Content[i+1].Line)
+		}
+		for index, item := range pool.Content {
+			account := resolveYAMLNode(item)
+			if account == nil || account.Kind != yaml.MappingNode {
+				return nil, fmt.Errorf("githubAccounts entry %d must be a mapping (line %d)", index+1, item.Line)
+			}
+			for field := 0; field+1 < len(account.Content); field += 2 {
+				key := account.Content[field]
+				if key.Value != "name" && key.Value != "token" {
+					continue
+				}
+				value := resolveYAMLNode(account.Content[field+1])
+				if value == nil || value.Kind != yaml.ScalarNode || value.Tag != "!!str" {
+					return nil, fmt.Errorf("githubAccounts entry %d %s must be a string (line %d)", index+1, key.Value, account.Content[field+1].Line)
+				}
+			}
+		}
+	}
+	return &root, nil
+}
+
+func resolveYAMLNode(node *yaml.Node) *yaml.Node {
+	seen := map[*yaml.Node]bool{}
+	for node != nil && node.Kind == yaml.AliasNode {
+		if seen[node] {
+			return nil
+		}
+		seen[node] = true
+		node = node.Alias
+	}
+	return node
+}
 
 // ServerSection mirrors the `server:` section of config.yaml. It carries both
 // yaml and mapstructure tags so it can be (de)serialized directly and read via
 // viper's UnmarshalKey.
 type ServerSection struct {
-	Host        string `yaml:"host" mapstructure:"host"`
-	Port        string `yaml:"port" mapstructure:"port"`
-	AuthEnabled bool   `yaml:"authEnabled" mapstructure:"authEnabled"`
-	AuthToken   string `yaml:"authToken" mapstructure:"authToken"`
-	DbPath      string `yaml:"dbPath" mapstructure:"dbPath"`
+	Host               string `yaml:"host" mapstructure:"host"`
+	Port               string `yaml:"port" mapstructure:"port"`
+	AuthEnabled        bool   `yaml:"authEnabled" mapstructure:"authEnabled"`
+	AuthToken          string `yaml:"authToken" mapstructure:"authToken"`
+	DbPath             string `yaml:"dbPath" mapstructure:"dbPath"`
+	LogRetentionMonths int    `yaml:"logRetentionMonths" mapstructure:"logRetentionMonths"`
 }
+
+const DefaultLogRetentionMonths = 2
 
 // DurationString renders a time.Duration as its Go string form ("5s") in YAML
 // and accepts either that form or integer nanoseconds on parse. This keeps
@@ -59,6 +141,8 @@ type ExportConfig struct {
 	Repository                  []typedef.Repository   `yaml:"repository"`
 	Storage                     []typedef.MultiStorage `yaml:"storage"`
 	GitHubToken                 string                 `yaml:"githubToken"`
+	GitHubAccounts              []githubapi.Account    `yaml:"githubAccounts"`
+	GitHubAccountConcurrency    uint                   `yaml:"githubAccountConcurrency"`
 	ConcurrencyNum              uint                   `yaml:"cocurrencyNum"`
 	ReleaseSizeLimit            int                    `yaml:"releaseSizeLimit"`
 	ReleaseNumLimit             int                    `yaml:"releaseNumLimit"`
@@ -92,10 +176,20 @@ func GetServerSection() ServerSection {
 	v.SetDefault("server.authEnabled", false)
 	v.SetDefault("server.authToken", "")
 	v.SetDefault("server.dbPath", "gitrieve.db")
+	v.SetDefault("server.logRetentionMonths", DefaultLogRetentionMonths)
 
-	var cfg ServerSection
+	// UnmarshalKey may omit nested defaults when a partial server section
+	// exists in the file. Seed the target as well, so adding retention alone
+	// cannot clear the listening address or database path.
+	cfg := ServerSection{
+		Host: "0.0.0.0", Port: "8080", DbPath: "gitrieve.db",
+		LogRetentionMonths: DefaultLogRetentionMonths,
+	}
 	if err := v.UnmarshalKey("server", &cfg); err != nil {
 		panic(err)
+	}
+	if cfg.LogRetentionMonths <= 0 {
+		cfg.LogRetentionMonths = DefaultLogRetentionMonths
 	}
 	return cfg
 }
@@ -111,6 +205,8 @@ func ExportFrom(cfg *Config) (string, error) {
 		Repository:                  cfg.Repository,
 		Storage:                     cfg.Storage,
 		GitHubToken:                 cfg.GitHubToken,
+		GitHubAccounts:              cfg.GitHubAccounts,
+		GitHubAccountConcurrency:    cfg.GitHubAccountConcurrency,
 		ConcurrencyNum:              cfg.ConcurrencyNum,
 		ReleaseSizeLimit:            cfg.ReleaseSizeLimit,
 		ReleaseNumLimit:             cfg.ReleaseNumLimit,
@@ -174,13 +270,16 @@ func readReloadSnapshotLocked() (*ReloadSnapshot, error) {
 	}
 	var next Config
 	if err := nv.Unmarshal(&next); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config file: %w", err)
+		return nil, fmt.Errorf("failed to unmarshal config file: check configuration field types")
 	}
 	seedDefaults(&next)
 	if !nv.IsSet("githubScheduleJitter") {
 		next.GitHubScheduleJitter = 30 * time.Second
 	}
 	if err := validateIdentity(&next); err != nil {
+		return nil, err
+	}
+	if err := validateStorages(next.Storage); err != nil {
 		return nil, err
 	}
 	return &ReloadSnapshot{config: Clone(&next), viper: nv}, nil
@@ -239,6 +338,9 @@ func seedExportDefaults(doc *ExportConfig, jitterPresent bool) {
 	if doc.GitHubAPIConcurrency == 0 {
 		doc.GitHubAPIConcurrency = 2
 	}
+	if doc.GitHubAccountConcurrency == 0 {
+		doc.GitHubAccountConcurrency = 2
+	}
 	if time.Duration(doc.GitHubMinRequestInterval) <= 0 {
 		doc.GitHubMinRequestInterval = DurationString(200 * time.Millisecond)
 	}
@@ -248,7 +350,7 @@ func seedExportDefaults(doc *ExportConfig, jitterPresent bool) {
 	if !jitterPresent || time.Duration(doc.GitHubScheduleJitter) < 0 {
 		doc.GitHubScheduleJitter = DurationString(30 * time.Second)
 	}
-	// The server section is never hot-applied, but an absent/partial section
+	// Startup settings require a restart, but an absent/partial section
 	// must not force empty host/port/dbPath onto the config on apply.
 	if doc.Server.Host == "" {
 		doc.Server.Host = "0.0.0.0"
@@ -259,6 +361,9 @@ func seedExportDefaults(doc *ExportConfig, jitterPresent bool) {
 	if doc.Server.DbPath == "" {
 		doc.Server.DbPath = "gitrieve.db"
 	}
+	if doc.Server.LogRetentionMonths <= 0 {
+		doc.Server.LogRetentionMonths = DefaultLogRetentionMonths
+	}
 }
 
 // ParseImport parses an imported YAML config document into its typed form. It
@@ -267,13 +372,13 @@ func seedExportDefaults(doc *ExportConfig, jitterPresent bool) {
 // for user/org entries so their identity keys resolve. It does not validate
 // identities — ValidateImport collects every violation for the caller.
 func ParseImport(yamlStr string) (*ExportConfig, error) {
-	var root yaml.Node
-	if err := yaml.Unmarshal([]byte(yamlStr), &root); err != nil {
-		return nil, fmt.Errorf("invalid YAML: %w", err)
+	root, err := parseConfigYAML([]byte(yamlStr))
+	if err != nil {
+		return nil, err
 	}
 	var doc ExportConfig
 	if err := yaml.Unmarshal([]byte(yamlStr), &doc); err != nil {
-		return nil, fmt.Errorf("invalid YAML: %w", err)
+		return nil, fmt.Errorf("invalid YAML field types or duplicate fields")
 	}
 	for i := range doc.Repository {
 		doc.Repository[i].URL = doc.Repository[i].EffectiveURL()
@@ -294,10 +399,11 @@ func ParseImport(yamlStr string) (*ExportConfig, error) {
 // ValidateImport checks an imported document for the rules that apply before
 // any import: every repository needs a usable identity (non-empty URL or
 // orgName), no two imported repositories share a normalized URL, and storage
-// names are non-empty and unique. Returns every violation so the caller can
-// surface them all at once.
+// names are non-empty and unique with a supported type, and GitHub accounts have
+// nonblank credentials and unique names. Returns every violation without
+// including credential values.
 func ValidateImport(doc *ExportConfig) []string {
-	var errs []string
+	errs := validateGitHubAccounts(doc.GitHubAccounts)
 	seen := map[string]string{}
 	for _, repo := range doc.Repository {
 		if repo.Key() == "" {
@@ -312,6 +418,9 @@ func ValidateImport(doc *ExportConfig) []string {
 	}
 	seenStorage := map[string]bool{}
 	for _, st := range doc.Storage {
+		if err := st.ValidateType(); err != nil {
+			errs = append(errs, err.Error())
+		}
 		if st.Name == "" {
 			errs = append(errs, "storage entry has an empty name")
 			continue
@@ -324,9 +433,27 @@ func ValidateImport(doc *ExportConfig) []string {
 	return errs
 }
 
+func validateGitHubAccounts(accounts []githubapi.Account) []string {
+	var errs []string
+	seenNames := make(map[string]bool, len(accounts))
+	for i, account := range accounts {
+		name := strings.TrimSpace(account.Name)
+		if name == "" {
+			errs = append(errs, fmt.Sprintf("githubAccounts entry %d has a blank name", i+1))
+		} else if seenNames[name] {
+			errs = append(errs, fmt.Sprintf("githubAccounts entry %d has a duplicate name", i+1))
+		}
+		seenNames[name] = true
+		if strings.TrimSpace(account.Token) == "" {
+			errs = append(errs, fmt.Sprintf("githubAccounts entry %d has a blank token", i+1))
+		}
+	}
+	return errs
+}
+
 // SetServerField persists one `server:` field to the loaded viper instance so
 // an imported server section is written to config.yaml. The running server
-// never re-reads the server section, so this only takes effect after a restart.
+// re-reads retention on each cleanup pass; other fields require a restart.
 // Returns an error when the config was never initialized.
 func SetServerField(field string, value interface{}) error {
 	stateMu.Lock()

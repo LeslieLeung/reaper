@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,51 @@ import (
 	"github.com/wnarutou/gitrieve/internal/githubapi"
 	"github.com/wnarutou/gitrieve/internal/typedef"
 )
+
+// A shallow account copy lets callers change published or job-bound credentials.
+func TestAccountPoolCopiesProtectPublishedAndExecutionCredentials(t *testing.T) {
+	cfg := &Config{GitHubAccounts: []githubapi.Account{{Name: "alice", Token: "alice-secret"}}}
+	SetIns(cfg)
+	snapshot := NewExecutionSnapshot(cfg)
+	cfg.GitHubAccounts[0].Token = "source-mutated"
+	require.Equal(t, "alice-secret", GetIns().GitHubAccounts[0].Token)
+	detached := GetIns()
+	detached.GitHubAccounts[0].Token = "copy-mutated"
+	require.Equal(t, "alice-secret", GetIns().GitHubAccounts[0].Token)
+	ctx := WithExecutionSnapshot(context.Background(), snapshot)
+	execution := GetExecutionConfig(ctx)
+	execution.GitHubAccounts[0].Token = "execution-mutated"
+	require.Equal(t, "alice-secret", GetExecutionConfig(ctx).GitHubAccounts[0].Token)
+}
+
+// Omitting the field from defaulting or policy conversion ignores user limits.
+func TestAccountPoolConcurrencyDefaultsAndPolicy(t *testing.T) {
+	writeTmpConfig(t, "githubToken: legacy\n")
+	require.Equal(t, uint(2), GetIns().GitHubAccountConcurrency)
+	require.Equal(t, uint(2), GetGitHubAPIConfig().AccountConcurrency)
+	cfg := &Config{GitHubAccountConcurrency: 5}
+	require.Equal(t, uint(5), GitHubAPIConfigFrom(cfg).AccountConcurrency)
+}
+
+// Selecting the process config instead of the execution generation changes
+// credentials during a running job; falling back to legacy ignores pool priority.
+func TestGetGitHubAccountsContextUsesDetachedNormalizedSnapshotPool(t *testing.T) {
+	original := &Config{
+		GitHubToken:    "ignored-legacy",
+		GitHubAccounts: []githubapi.Account{{Name: " alice ", Token: " alice-secret "}, {Name: "bob", Token: "bob-secret"}},
+	}
+	ctx := WithExecutionSnapshot(context.Background(), NewExecutionSnapshot(original))
+	SetIns(&Config{GitHubToken: "new-legacy"})
+	want := []githubapi.Account{{Name: "alice", Token: "alice-secret"}, {Name: "bob", Token: "bob-secret"}}
+	accounts := GetGitHubAccountsContext(ctx)
+	require.Equal(t, want, accounts)
+	accounts[0].Token = "mutated"
+	require.Equal(t, want, GetGitHubAccountsContext(ctx))
+	require.Equal(t, []githubapi.Account{{Token: "new-legacy"}}, GetGitHubAccountsContext(context.Background()))
+	require.Equal(t, []githubapi.Account{{Token: "new-legacy"}}, GetGitHubAccountsContext(nil))
+	SetIns(&Config{})
+	require.Empty(t, GetGitHubAccountsContext(context.Background()))
+}
 
 // writeTmpConfig points the package global at a temp config file and loads it,
 // mirroring the pattern used by internal/release tests. Cleanup resets Path.

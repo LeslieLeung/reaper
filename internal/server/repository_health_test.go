@@ -222,6 +222,64 @@ func TestRepositoryHealthSearchFilterSummaryAndSortAreDeterministic(t *testing.T
 	require.Equal(t, "beta", input[0].Name, "helpers must not mutate shared snapshot inputs except the explicit sort target")
 }
 
+func TestRepositoryNextRunSort(t *testing.T) {
+	when := time.Date(2026, time.September, 27, 8, 0, 0, 0, time.UTC)
+	input := []RepositoryOverview{
+		{Repository: typedef.Repository{Name: "unscheduled", URL: "github.com/acme/a"}},
+		{Repository: typedef.Repository{Name: "later", URL: "github.com/acme/b"}, NextRunTime: timePointer(when.Add(time.Hour))},
+		{Repository: typedef.Repository{Name: "early-z", URL: "github.com/acme/z"}, NextRunTime: timePointer(when)},
+		{Repository: typedef.Repository{Name: "early-c", URL: "github.com/acme/c"}, NextRunTime: timePointer(when)},
+		{Repository: typedef.Repository{Name: "invalid", URL: "github.com/acme/d"}, ScheduleError: "invalid cron"},
+	}
+	for _, tc := range []struct {
+		direction string
+		want      []string
+	}{
+		{"asc", []string{"early-c", "early-z", "later", "invalid", "unscheduled"}},
+		{"desc", []string{"later", "early-c", "early-z", "invalid", "unscheduled"}},
+	} {
+		t.Run(tc.direction, func(t *testing.T) {
+			candidate := append([]RepositoryOverview(nil), input...)
+			sortRepositorySnapshot(candidate, "next_run", tc.direction)
+			require.Equal(t, tc.want, overviewNames(candidate))
+		})
+	}
+}
+
+func TestRepositoryActiveFiltersIncludeStuckExecutions(t *testing.T) {
+	now := time.Date(2026, time.September, 23, 12, 0, 0, 0, time.UTC)
+	var repos []typedef.Repository
+	stats := make(map[string]db.RepositoryRunStats)
+	for _, status := range []string{"running", "pending"} {
+		for _, age := range []struct {
+			name     string
+			duration time.Duration
+		}{{"recent", time.Hour}, {"stuck", 25 * time.Hour}} {
+			name := status + "-" + age.name
+			repo := typedef.Repository{Name: name, URL: "github.com/acme/" + name}
+			repos = append(repos, repo)
+			stats[repo.Key()] = *runStatsAt(status, now.Add(-age.duration), nil)
+		}
+	}
+	snapshot := buildRepositorySnapshot(repos, stats, now, time.Hour, 24*time.Hour)
+	for _, tc := range []struct {
+		name   string
+		filter RepositoryHealthFilter
+		want   []string
+	}{
+		{"running", RepositoryHealthFilter{Health: "running"}, []string{"running-recent", "running-stuck"}},
+		{"pending", RepositoryHealthFilter{Health: "pending"}, []string{"pending-recent", "pending-stuck"}},
+		{"syncing", RepositoryHealthFilter{Health: "syncing"}, []string{"running-recent", "running-stuck", "pending-recent", "pending-stuck"}},
+		{"stuck", RepositoryHealthFilter{Health: "stuck"}, []string{"running-stuck", "pending-stuck"}},
+		{"stuck running", RepositoryHealthFilter{Health: "running", Stuck: boolPointer(true)}, []string{"running-stuck"}},
+		{"recent pending", RepositoryHealthFilter{Health: "pending", Stuck: boolPointer(false)}, []string{"pending-recent"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, overviewNames(filterRepositorySnapshot(snapshot, tc.filter)))
+		})
+	}
+}
+
 func runStatsAt(status string, start time.Time, end *time.Time) *db.RepositoryRunStats {
 	return &db.RepositoryRunStats{
 		LatestExecutionID: "execution-" + status,

@@ -35,12 +35,14 @@ func issueMaintenanceFixture(t *testing.T, signal *maintenance.Signal, empty *bo
 		header := make(http.Header)
 		header.Set("Content-Type", "application/json")
 		if strings.HasSuffix(r.URL.Path, "/issues") {
-			if r.URL.Query().Get("page") != "" {
+			if r.URL.Query().Get("page") != "" || r.URL.Query().Get("after") != "" {
 				return nil, fmt.Errorf("started another issue page after soft stop")
 			}
 			if !*empty {
 				body = `[{"number":1,"title":"one","updated_at":"2026-10-20T01:00:00Z"},{"number":2,"title":"two","updated_at":"2026-10-20T01:00:00Z"}]`
-				header.Set("Link", `<https://api.github.com/repos/test/repo/issues?page=2>; rel="next"`)
+				// Cursor-only next links must still mark this page incomplete;
+				// go-github's numeric NextPage is zero for this response.
+				header.Set("Link", `<https://api.github.com/repos/test/repo/issues?after=opaque-next>; rel="next"`)
 			}
 		} else if strings.HasSuffix(r.URL.Path, "/comments") {
 			signal.Request()

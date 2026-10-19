@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**gitrieve** is a Go-based tool for archiving repositories from any Git server (GitHub, etc.) to multiple storage backends. It supports scheduling via cron, downloading repository metadata (releases, issues, wiki, discussions), and storing to local filesystem or S3-compatible storage.
+**gitrieve** is a Go-based tool for archiving repositories from any Git server (GitHub, etc.) to local file storage. It supports scheduling via cron, downloading repository metadata (releases, issues, wiki, discussions), and storing to the local filesystem.
 
 ## Build & Development
 
@@ -35,7 +35,7 @@ go build -o gitrieve main.go
   - `config/` - Viper-based configuration loading
   - `repository/` - Git cloning/fetching logic
   - `scm/` - SCM abstraction (currently GitHub via `githubv4`/`go-github`)
-  - `storage/` - Storage backends (file, S3)
+  - `storage/` - Local file storage
   - `typedef/` - Shared types (Repository, Storage, MultiStorage)
   - `ui/` - Terminal output helpers
 
@@ -44,14 +44,14 @@ go build -o gitrieve main.go
 - Config parsed into `Config` struct with `Repository[]`, `Storage[]`, and global settings
 - Storage backends selected by name reference in repository config
 - Daemon and server modes use `gocron/v2` for scheduled jobs
-- Archives created with `archiver/v4`, uploaded via `minio-go` (S3) or direct file write
+- Archives created with `archiver/v4`, stored by direct file write
 
 ### Concurrency: cross-process per-repo locks
 Same repo + same component syncs are serialized across goroutines AND processes
 by `internal/lock` — a per-key in-process semaphore plus a `gofrs/flock` advisory
 file lock on `.gitrieve/locks/<host>/<owner>/<repo>/<component>.lock`. Covers
 code/wiki/issue/discussion/release. The lock is per-host and per-working-directory:
-multi-host writes to shared storage (e.g. two machines writing one S3 bucket) are
+multi-host writes to shared storage (e.g. two machines writing one network filesystem) are
 not guarded. Lock files are never deleted.
 
 ### Server repository sync health
@@ -96,12 +96,13 @@ A core design goal: **once code and history are pulled locally, a sync must neve
 
 - **Remote unreachable → early exit.** `gitRepo.Fetch` failure returns early (`repository.go` ~line 159-162); no archiving and no `os.RemoveAll` cleanup runs, so the local cache and prior archived snapshots are untouched. Do NOT move cleanup before fetch or swallow fetch errors to continue.
 - **Branches are added, never deleted.** The `refs.ForEach` loop (`repository.go` ~line 199-286) only creates/updates local branches; it never deletes a local branch. Upstream-deleted branches must remain locally.
-- **Pull, not reset.** Updates use `w.Pull` (merge), never `git reset --hard origin`. A force-push rewriting the upstream default branch only moves the `origin/*` tracking refs; local branches and their old commit objects must not be overwritten or discarded.
+- **Fast-forward only, never reset.** The default branch uses `w.Pull`; non-default branches update local refs only after proving ancestry, respecting shallow-history boundaries. Never use `git reset --hard origin` or overwrite local branch history after an upstream force-push.
+- **Only materialize the default branch.** Non-default branches are archived as Git refs and objects without checkout, so filenames that exceed host filesystem limits do not break the backup. A cache left on another branch by a failed checkout must return to the default branch and produce an archive on retry.
 - **Old commits retained.** Commits are immutable objects and the sync never force-moves local refs, so already-pulled history stays in the local `.git` object store and is recoverable via `git checkout <old-hash>`.
 
 Recommended-for-recoverability config: `allBranches: true` (pull every branch's commits) and `useCache: true` (keep the local `.git` cache across syncs; otherwise the working dir is removed at the end of each sync).
 
-Known limitation (not yet a regression to fix unless asked): archiving writes a fixed filename (e.g. `repo.tar.gz`) and overwrites any prior archive at the same path. If the upstream is still reachable but its default branch was rewritten to a single README, the new snapshot replaces the previous normal one at that path. Local cached code/history is still safe, but distinct historical snapshots need object-storage versioning or versioned archive paths.
+Known limitation (not yet a regression to fix unless asked): archiving writes a fixed filename (e.g. `repo.tar.gz`) and overwrites any prior archive at the same path. If the upstream is still reachable but its default branch was rewritten to a single README, the new snapshot replaces the previous normal one at that path. Local cached code/history is still safe, but distinct historical snapshots need separate copies under versioned archive paths.
 
 ### Configuration Schema
 ```yaml
@@ -117,9 +118,8 @@ repository:
 
 storage:
   - name: <id>
-    type: file | s3
-    path: <local path>            # for file
-    endpoint/bucket/region/keys   # for s3
+    type: file
+    path: <local path>
 
 githubToken: <token>
 cocurrencyNum: <int>
@@ -137,4 +137,4 @@ syncStuckThreshold: <duration, default 24h>
 
 ## Testing
 
-Go tests live alongside the code they test as `_test.go` files (e.g. `internal/retry/retry_test.go`, `internal/lock/lock_test.go`), following Go conventions. Run the full Go and web suite with `make test`; the underlying commands are `go test ./...` and `node --test web/main.test.cjs`.
+Go tests live alongside the code they test as `_test.go` files (e.g. `internal/retry/retry_test.go`, `internal/lock/lock_test.go`), following Go conventions. Run the full Go and web suite with `make test`; the underlying commands are `go test ./...` and `node --test web/main.test.cjs web/tests/*.test.js`.

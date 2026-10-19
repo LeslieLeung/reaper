@@ -48,8 +48,8 @@ Files: internal/server/maintenance.go and tests, api.go; cmd/server/server.go an
 
 ## Verification results
 
-- Full `go test ./... -count=1`: passed after both review corrections.
-- `node --test web/main.test.cjs`: 5 passed.
+- Full `go test -json ./... -count=1 -timeout=5m`: passed after review corrections and merging the latest main branch.
+- `node --test web/main.test.cjs web/tests/*.test.js`: 18 passed.
 - Windows build and Linux amd64 cross-build: passed.
 - `git diff --check`: passed.
 - Race detector unavailable in this environment (`CGO_ENABLED=0`, no GCC found).

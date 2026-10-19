@@ -8,18 +8,28 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/wnarutou/gitrieve/internal/config"
+	"github.com/wnarutou/gitrieve/internal/githubapi"
 	"github.com/wnarutou/gitrieve/internal/typedef"
 )
 
 // secretFields are config values never echoed in plaintext in a diff.
 var secretFields = map[string]bool{
-	"githubToken":     true,
-	"authToken":       true,
-	"secretAccessKey": true,
+	"githubToken":    true,
+	"githubAccounts": true,
+	"authToken":      true,
 }
 
-// maskSecret returns "***" for a non-empty secret value, the value otherwise.
+// maskSecret masks nonempty secrets, preserving account labels in pool lists.
 func maskSecret(field string, v interface{}) interface{} {
+	if accounts, ok := v.([]githubapi.Account); ok && field == "githubAccounts" {
+		masked := append([]githubapi.Account(nil), accounts...)
+		for i := range masked {
+			if masked[i].Token != "" {
+				masked[i].Token = "***"
+			}
+		}
+		return masked
+	}
 	if s, ok := v.(string); ok && secretFields[field] && s != "" {
 		return "***"
 	}
@@ -52,11 +62,6 @@ var storageFields = []struct {
 	{"name", func(s typedef.MultiStorage) interface{} { return s.Name }},
 	{"type", func(s typedef.MultiStorage) interface{} { return s.Type }},
 	{"path", func(s typedef.MultiStorage) interface{} { return s.Path }},
-	{"endpoint", func(s typedef.MultiStorage) interface{} { return s.Endpoint }},
-	{"bucket", func(s typedef.MultiStorage) interface{} { return s.Bucket }},
-	{"region", func(s typedef.MultiStorage) interface{} { return s.Region }},
-	{"accessKeyID", func(s typedef.MultiStorage) interface{} { return s.AccessKeyID }},
-	{"secretAccessKey", func(s typedef.MultiStorage) interface{} { return s.SecretAccessKey }},
 }
 
 // stringSetEq compares two string slices as unordered sets (used for the
@@ -201,6 +206,8 @@ func diffGlobals(cur *config.Config, imp *config.ExportConfig) []FieldChange {
 		imp   interface{}
 	}{
 		{"githubToken", cur.GitHubToken, imp.GitHubToken},
+		{"githubAccounts", cur.GitHubAccounts, imp.GitHubAccounts},
+		{"githubAccountConcurrency", cur.GitHubAccountConcurrency, imp.GitHubAccountConcurrency},
 		{"cocurrencyNum", cur.ConcurrencyNum, imp.ConcurrencyNum},
 		{"releaseSizeLimit", cur.ReleaseSizeLimit, imp.ReleaseSizeLimit},
 		{"releaseNumLimit", cur.ReleaseNumLimit, imp.ReleaseNumLimit},
@@ -234,6 +241,7 @@ func diffServer(cur, imp config.ServerSection) []FieldChange {
 		{"authEnabled", cur.AuthEnabled, imp.AuthEnabled},
 		{"authToken", cur.AuthToken, imp.AuthToken},
 		{"dbPath", cur.DbPath, imp.DbPath},
+		{"logRetentionMonths", cur.LogRetentionMonths, imp.LogRetentionMonths},
 	}
 	var out []FieldChange
 	for _, p := range pairs {
@@ -246,7 +254,7 @@ func diffServer(cur, imp config.ServerSection) []FieldChange {
 }
 
 // buildWarnings explains the operational consequences of the changes being
-// previewed. The server section is never hot-applied, and changing
+// previewed. Startup settings require a restart, and changing
 // authEnabled/authToken can lock the operator out of the web UI.
 func buildWarnings(serverChanges []FieldChange) []string {
 	if len(serverChanges) == 0 {
@@ -257,7 +265,12 @@ func buildWarnings(serverChanges []FieldChange) []string {
 			return []string{"server.authEnabled / server.authToken 已变更：该改动不会热生效，需重启 server；若忘记令牌，重启后可能无法访问 Web UI。"}
 		}
 	}
-	return []string{"server 段已变更：该改动不会热生效，需重启 server 后生效。"}
+	for _, c := range serverChanges {
+		if c.Field != "logRetentionMonths" {
+			return []string{"server 段已变更：监听地址、认证和数据库路径改动需重启 server 后生效；日志保留月数在下次清理时生效。"}
+		}
+	}
+	return []string{"日志保留月数已变更：下次自动清理时生效。"}
 }
 
 // ExportConfig returns the full current config as YAML, usable directly as
@@ -317,7 +330,8 @@ func (a *API) PreviewImport(c *gin.Context) {
 // the documented defaults (added/modified/globals/server -> imported, deleted ->
 // keep). Builds a complete replacement config, then publishes, persists, and
 // refreshes schedules as one serialized generation. The server section is
-// written to viper but never hot-applied.
+// written to viper; log retention takes effect on the next cleanup pass,
+// while listening, authentication and database settings require a restart.
 func (a *API) ApplyImport(c *gin.Context) {
 	var req ImportRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -456,6 +470,14 @@ func (a *API) applyImportLocked(doc *config.ExportConfig, req *ImportRequest) (I
 	next.Storage = keptSt
 
 	// ---- globals ----
+	if choice(req.Choices.GlobalChoices, "githubAccounts", "imported") == "imported" && !reflect.DeepEqual(next.GitHubAccounts, doc.GitHubAccounts) {
+		next.GitHubAccounts = append([]githubapi.Account(nil), doc.GitHubAccounts...)
+		result.GlobalsUpdated++
+	}
+	if choice(req.Choices.GlobalChoices, "githubAccountConcurrency", "imported") == "imported" && next.GitHubAccountConcurrency != doc.GitHubAccountConcurrency {
+		next.GitHubAccountConcurrency = doc.GitHubAccountConcurrency
+		result.GlobalsUpdated++
+	}
 	if choice(req.Choices.GlobalChoices, "githubToken", "imported") == "imported" && next.GitHubToken != doc.GitHubToken {
 		next.GitHubToken = doc.GitHubToken
 		result.GlobalsUpdated++
@@ -520,7 +542,7 @@ func (a *API) applyImportLocked(doc *config.ExportConfig, req *ImportRequest) (I
 		}
 	}
 
-	// ---- server section: persist chosen fields; never hot-applied ----
+	// ---- server section: persist chosen fields ----
 	curServer := config.GetServerSection()
 	if choice(req.Choices.ServerChoices, "host", "imported") == "imported" && curServer.Host != doc.Server.Host {
 		_ = config.SetServerField("host", doc.Server.Host)
@@ -542,6 +564,10 @@ func (a *API) applyImportLocked(doc *config.ExportConfig, req *ImportRequest) (I
 		_ = config.SetServerField("dbPath", doc.Server.DbPath)
 		result.ServerUpdated++
 	}
+	if choice(req.Choices.ServerChoices, "logRetentionMonths", "imported") == "imported" && curServer.LogRetentionMonths != doc.Server.LogRetentionMonths {
+		_ = config.SetServerField("logRetentionMonths", doc.Server.LogRetentionMonths)
+		result.ServerUpdated++
+	}
 
 	// The caller publishes this fully-built replacement only after every
 	// selected section has been applied.
@@ -550,7 +576,7 @@ func (a *API) applyImportLocked(doc *config.ExportConfig, req *ImportRequest) (I
 
 // ReloadConfig re-reads config.yaml from disk, repoints the API and executor at
 // the fresh config instance, and replaces the running server's cron schedules.
-// The `server:` section is NOT hot-applied and still requires a restart.
+// Startup server settings require a restart; retention is read on each cleanup pass.
 func (a *API) ReloadConfig(c *gin.Context) {
 	a.configMu.Lock()
 	snapshot, err := a.readReloadSnapshot()

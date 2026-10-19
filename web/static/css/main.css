@@ -36,9 +36,28 @@ body {
 }
 
 .brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
     font-weight: 700;
     font-size: 16px;
     letter-spacing: 0.3px;
+}
+
+.app-version {
+    color: #d1d5db;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.16);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0;
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .nav-links { display: flex; gap: 4px; flex: 1; }
@@ -348,7 +367,6 @@ select:focus, input:focus {
     cursor: pointer;
 }
 
-.s3-fields { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 
 .form-actions {
     display: flex;
@@ -486,7 +504,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 @media (max-width: 640px) {
     .app { margin: 16px auto; padding: 0 12px; }
-    .topbar { padding: 0 12px; gap: 8px; }
+    .topbar { padding: 10px 12px; gap: 8px; height: auto; min-height: 52px; flex-wrap: wrap; }
+    .nav-links { order: 3; flex-basis: 100%; }
+    .nav-status { margin-left: auto; }
     .nav-links a { padding: 6px 7px; }
     .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .toolbar, .toolbar-group, .page-header { align-items: stretch; }

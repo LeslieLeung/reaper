@@ -150,6 +150,8 @@ func assertComponentSchemaObjects(t *testing.T, testDB *DB) {
 		"idx_executions_repo_status_end",
 		"idx_executions_status",
 		"idx_execution_components_execution",
+		"idx_logs_execution_id",
+		"idx_executions_log_retention",
 	} {
 		var got string
 		require.NoError(t, testDB.QueryRow(
