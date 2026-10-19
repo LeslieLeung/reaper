@@ -16,6 +16,7 @@ import (
 	"github.com/wnarutou/gitrieve/internal/archive"
 	internalconfig "github.com/wnarutou/gitrieve/internal/config"
 	"github.com/wnarutou/gitrieve/internal/lock"
+	"github.com/wnarutou/gitrieve/internal/maintenance"
 	"github.com/wnarutou/gitrieve/internal/scm"
 	"github.com/wnarutou/gitrieve/internal/scm/github"
 	"github.com/wnarutou/gitrieve/internal/storage"
@@ -107,11 +108,29 @@ func appendConcreteRepositories(ret []typedef.Repository, configured typedef.Rep
 // Sync archives a repository's code (or wiki when iswiki is set). ctx bounds
 // every go-git network operation: a caller cancellation (e.g. a user cancelling
 // a job) or the internal 30-minute timeout fails the sync instead of hanging.
-func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []typedef.MultiStorage) error {
+func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []typedef.MultiStorage) (resultErr error) {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if maintenance.Requested(ctx) {
+		return maintenance.ErrRequested
+	}
+	// Only an interruption caused by the soft signal is a maintenance stop.
+	// Real Git, archive and storage failures keep their original errors.
+	defer func() {
+		if ctx.Err() == nil && maintenance.Requested(ctx) && errors.Is(resultErr, context.Canceled) {
+			resultErr = maintenance.ErrRequested
+		}
+	}()
+	networkCtx, interrupt := maintenance.InterruptContext(ctx)
+	defer interrupt()
 	useCache := repo.UseCache
 	depth := repo.Depth
 	allBranches := repo.AllBranches
-	isUpdated := false
+	// A prior interruption may have updated local refs before publication.
+	// Republish successful cached syncs even without new upstream changes so
+	// those updates (and failed storage writes) cannot remain stranded.
+	isUpdated := useCache
 	// get current directory
 	currentDir, _ := os.Getwd()
 
@@ -153,7 +172,7 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	if iswiki {
 		component = "wiki"
 	}
-	unlock, err := lock.Acquire(ctx, r, component, currentDir)
+	unlock, err := lock.Acquire(networkCtx, r, component, currentDir)
 	if err != nil {
 		return err
 	}
@@ -180,7 +199,7 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	// Derive from the caller's ctx so a job cancellation also interrupts them,
 	// and apply a 30-minute stall-detection timeout on top (generous; not a cap
 	// on legitimate large clones).
-	syncCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	syncCtx, cancel := context.WithTimeout(networkCtx, 30*time.Minute)
 	defer cancel()
 
 	// Route git's own progress (server-side "Enumerating/Counting/Compressing
@@ -272,6 +291,9 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 
 	// find all remote branches
 	if err := refs.ForEach(func(ref *plumbing.Reference) error {
+		if syncCtx.Err() != nil {
+			return syncCtx.Err()
+		}
 		if ref.Name().IsRemote() {
 			// get remote branch name
 			remoteBranchName := ref.Name().Short()
@@ -382,6 +404,9 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	}
 
 	if isUpdated {
+		if maintenance.Requested(ctx) && ctx.Err() == nil {
+			return maintenance.ErrRequested
+		}
 		if syncCtx.Err() != nil {
 			// Cancelled after the network work — skip archiving/storing; the
 			// fetched objects are already preserved in the local cache.
@@ -397,7 +422,7 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 		// Archive the working tree directly from gitDir. Create takes an
 		// absolute path and never changes the process cwd, so it is safe to
 		// run from concurrent job goroutines.
-		buf, err := archive.Create(syncCtx, gitDir, targetDir)
+		buf, err := archive.Create(ctx, gitDir, targetDir)
 		if err != nil {
 			ui.Errorf("Error creating archive, %s", err)
 			return err
@@ -429,6 +454,11 @@ func Sync(ctx context.Context, repo typedef.Repository, iswiki bool, storages []
 	if syncCtx.Err() != nil {
 		// Cancelled — stop before any remaining work (e.g. temp-dir cleanup).
 		return syncCtx.Err()
+	}
+	// Read the signal directly: its network-context forwarding goroutine may
+	// not have run yet when a request arrives during archive publication.
+	if maintenance.Requested(ctx) {
+		return maintenance.ErrRequested
 	}
 
 	// cleanup

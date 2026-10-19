@@ -21,6 +21,13 @@
         </div>
     </nav>
 
+    <aside class="maintenance-bar" aria-label="系统维护">
+        <span id="maintenance-status" role="status" aria-live="polite">正在获取维护状态…</span>
+        <div class="maintenance-actions">
+            <button id="btn-maintenance" class="btn btn-sm" disabled>进入维护模式</button>
+            <button id="btn-maintenance-refresh" class="btn btn-sm">刷新维护状态</button>
+        </div>
+    </aside>
     <main id="app" class="app"></main>
 
     <div id="log-modal" class="modal hidden">

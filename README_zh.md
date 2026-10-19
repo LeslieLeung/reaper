@@ -211,3 +211,22 @@ docker compose up -d
 ```
 
 发布的镜像是多架构 manifest，覆盖 `linux/amd64` 和 `linux/arm64`，在 x86_64 和 Apple Silicon 机器上均可使用。
+
+### 升级前进入维护模式
+
+在 Web 页面顶部点击“进入维护模式”，等待提示“可以安全升级”后，再更新容器：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+维护期间禁止提交新任务，排队任务取消；正在执行的 Git/Wiki 拉取会停止，Issue/Discussion 完成当前列表页及其评论、回复，并将已下载内容打包写入存储后停止。Release 完成当前文件下载及存储后停止。已经开始的归档写入会等待完成，实际下载或存储错误仍记为失败。
+
+关闭 `useCache` 时，尚未下载完整列表的 Issue/Discussion 会另存为 `issues.partial.<ID>.tar.gz` / `discussions.partial.<ID>.tar.gz`，保留之前的完整归档；这些部分归档不会自动删除。下一次完整同步照常更新正式归档。启用缓存时，后续成功同步会重新发布缓存归档，即使远端没有新变化，以补偿之前中断或失败的写入；这会增加打包和上传开销。
+
+维护状态只保存在内存中。升级重启后恢复正常定时调度，不恢复旧队列，也不立即重跑中止的任务；下一次 cron 触发或手动操作会创建新任务。没有配置 cron 的仓库需手动触发。不重启时，可在收尾完成后点击“退出维护模式”重新开放调度。
+
+`server` 模式收到 SIGTERM/SIGINT 时也会执行相同收尾。Compose 示例提供 `stop_grace_period: 10m`，超时后 Docker 仍可能强制结束容器，因此大文件或评论很多时应先在页面等待维护完成。数据库状态写入失败时，页面不会提示可以安全升级，请先查看日志并处理存储问题。
+
+维护 API（沿用现有认证）：`GET /api/maintenance` 查询状态，`POST /api/maintenance` 进入维护，`DELETE /api/maintenance` 退出维护。`ready: true` 表示任务已收尾且状态保存成功；退出维护不会自动提交任务。维护状态刷新不会自动刷新仓库列表。

@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"net"
 	"net/http"
+	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -109,6 +113,9 @@ func (s *Server) setupRoutes(cfg *config.Config) {
 		apiGroup = s.router.Group("/")
 	}
 
+	apiGroup.GET("/api/maintenance", api.GetMaintenance)
+	apiGroup.POST("/api/maintenance", api.EnterMaintenance)
+	apiGroup.DELETE("/api/maintenance", api.ExitMaintenance)
 	apiGroup.POST("/api/jobs", api.CreateJob)
 	apiGroup.POST("/api/jobs/bulk", api.BulkCreateJobs)
 	apiGroup.DELETE("/api/jobs/:id", api.CancelJob)
@@ -181,7 +188,7 @@ func (s *Server) RefreshSchedules(cfg *config.Config) error {
 			_, scheduleErr := next.NewJob(
 				gocron.CronJob(repo.Cron, false),
 				gocron.NewTask(func() {
-					if _, executeErr := s.executor.ExecuteJob(repoKey); executeErr != nil {
+					if _, executeErr := s.executor.ExecuteJob(repoKey); executeErr != nil && !errors.Is(executeErr, executor.ErrMaintenance) {
 						ui.Errorf("Failed to execute scheduled repository %s: %s", repoKey, executeErr)
 					}
 				}),
@@ -222,7 +229,7 @@ func (s *Server) Close() error {
 var Cmd = &cobra.Command{
 	Use:   "server",
 	Short: "start web server",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg := config.GetIns()
 		s := NewServer(cfg)
 		defer func() {
@@ -233,8 +240,12 @@ var Cmd = &cobra.Command{
 		serverCfg := internalserver.GetServerConfig()
 		addr := fmt.Sprintf("%s:%s", serverCfg.Host, serverCfg.Port)
 		ui.Printf("Starting server on %s", addr)
-		if err := http.ListenAndServe(addr, s); err != nil {
-			ui.ErrorfExit("Server failed: %s", err)
+		ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			return err
 		}
+		return s.serve(ctx, listener)
 	},
 }

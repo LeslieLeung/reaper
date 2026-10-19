@@ -50,6 +50,69 @@ async function api(path, opts) {
     return body ? body.data : null;
 }
 
+let maintenanceState = null;
+let maintenanceBusy = false;
+let maintenanceTimer = null;
+let maintenanceEpoch = 0;
+
+function displayMaintenance(value) {
+    maintenanceState = value;
+    clearTimeout(maintenanceTimer);
+    maintenanceTimer = null;
+    const status = $('#maintenance-status');
+    const button = $('#btn-maintenance');
+    if (!status || !button) return;
+    button.textContent = value.enabled ? '退出维护模式' : '进入维护模式';
+    button.disabled = maintenanceBusy || value.shutting_down || (value.enabled && !value.ready);
+    if (!value.enabled) {
+        status.textContent = '正常运行 · 升级前可进入维护模式';
+    } else if (value.error) {
+        status.textContent = '维护收尾状态保存失败：' + value.error + '。请检查任务日志和数据库，尚不能确认安全升级。';
+        if (!value.drained) maintenanceTimer = setTimeout(refreshMaintenance, 2000);
+    } else if (value.ready) {
+        status.textContent = value.shutting_down ? '任务已收尾，服务正在停止。' :
+            '已进入维护，可以安全升级。重启后恢复正常调度，不重跑旧任务。';
+    } else {
+        status.textContent = `正在收尾：运行 ${value.running || 0}，排队收尾 ${value.pending || 0}，提交中 ${value.preparing || 0}。等待当前页或文件及归档写入完成。`;
+        maintenanceTimer = setTimeout(refreshMaintenance, 2000);
+    }
+}
+
+async function refreshMaintenance() {
+    if (maintenanceBusy) return;
+    const epoch = ++maintenanceEpoch;
+    try {
+        const value = await api('/api/maintenance');
+        if (epoch === maintenanceEpoch) displayMaintenance(value);
+    } catch (e) {
+        if (epoch !== maintenanceEpoch) return;
+        maintenanceState = null;
+        clearTimeout(maintenanceTimer);
+        const status = $('#maintenance-status');
+        if (status) status.textContent = '无法确认维护状态：' + e.message + '。请刷新状态后再升级。';
+        const button = $('#btn-maintenance');
+        if (button) button.disabled = true;
+    }
+}
+
+async function toggleMaintenance() {
+    if (maintenanceBusy || !maintenanceState || maintenanceState.shutting_down ||
+        (maintenanceState.enabled && !maintenanceState.ready)) return;
+    maintenanceBusy = true;
+    ++maintenanceEpoch;
+    clearTimeout(maintenanceTimer);
+    $('#btn-maintenance').disabled = true;
+    try {
+        const value = await api('/api/maintenance', {method: maintenanceState.enabled ? 'DELETE' : 'POST'});
+        maintenanceBusy = false;
+        displayMaintenance(value);
+    } catch (e) {
+        maintenanceBusy = false;
+        toast('维护操作失败：' + e.message, true);
+        await refreshMaintenance();
+    }
+}
+
 function optionsCell(r) {
     const parts = [];
     if (r.UseCache) parts.push('cache');
@@ -1174,6 +1237,9 @@ async function reloadConfig() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    $('#btn-maintenance').addEventListener('click', toggleMaintenance);
+    $('#btn-maintenance-refresh').addEventListener('click', refreshMaintenance);
+    refreshMaintenance();
     $('#log-modal-close').addEventListener('click', closeLogModal);
     $('#log-modal').addEventListener('click', (ev) => {
         if (ev.target === ev.currentTarget) closeLogModal();
