@@ -22,6 +22,13 @@ func newGitHTTPClient(idleTimeout time.Duration) *http.Client {
 	// not conceal a stalled clone via HTTP/2 multiplexing.
 	tr.ForceAttemptHTTP2 = false
 	tr.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	// Clone initializes the default transport's HTTP/2 support and can copy
+	// "h2" into ALPN. Disabling its handler alone still lets the server select
+	// HTTP/2, while this transport sends HTTP/1.1, causing EOF/protocol errors.
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{}
+	}
+	tr.TLSClientConfig.NextProtos = []string{"http/1.1"}
 	dial := tr.DialContext
 	tr.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		conn, err := dial(ctx, network, addr)
