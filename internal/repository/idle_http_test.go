@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"net"
 	"net/http"
@@ -19,6 +20,38 @@ import (
 	gitHTTP "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGitHTTPClientNegotiatesHTTP1WithHTTP2Server(t *testing.T) {
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, r.Proto)
+	}))
+	server.EnableHTTP2 = true
+	server.TLS = &tls.Config{NextProtos: []string{"h2", "http/1.1"}}
+	server.StartTLS()
+	defer server.Close()
+
+	gitClient := newGitHTTPClient(time.Second)
+	defer gitClient.CloseIdleConnections()
+	tr := gitClient.Transport.(*http.Transport)
+	// Trust the test certificate without replacing the cloned TLS settings:
+	// replacing TLSClientConfig hides inherited HTTP/2 ALPN advertisements.
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{}
+	}
+	tr.TLSClientConfig.RootCAs = x509.NewCertPool()
+	tr.TLSClientConfig.RootCAs.AddCert(server.Certificate())
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server.URL, nil)
+	require.NoError(t, err)
+	resp, err := gitClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, "HTTP/1.1", string(body))
+	require.Equal(t, "http/1.1", resp.TLS.NegotiatedProtocol)
+}
 
 func TestGitAccountTransportDetectsIdle(t *testing.T) {
 	seenToken := make(chan string, 1)
