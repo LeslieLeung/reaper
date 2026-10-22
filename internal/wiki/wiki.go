@@ -27,7 +27,18 @@ func wikiAvailability(repoURL string, hasWiki bool) error {
 }
 
 func uninitializedPublicWiki(hasWiki, private bool, err error) bool {
-	return hasWiki && !private && errors.Is(err, transport.ErrAuthenticationRequired)
+	if !hasWiki || private {
+		return false
+	}
+	// Only accept the transport error and its ordinary wrappers. Joined errors
+	// can also contain local cleanup failures that must still fail the job.
+	for err != nil {
+		if err == transport.ErrAuthenticationRequired || err == transport.ErrRepositoryNotFound {
+			return true
+		}
+		err = errors.Unwrap(err)
+	}
+	return false
 }
 
 func Sync(ctx context.Context, repo typedef.Repository, storages []typedef.MultiStorage) error {

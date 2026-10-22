@@ -42,7 +42,8 @@ var newGithubClient = func() (repoLister, error) { return github.New() }
 var newGithubClientWithContext = func(ctx context.Context) (contextualRepoLister, error) { return github.NewWithContext(ctx) }
 
 func shouldLogCloneError(isWiki bool, err error) bool {
-	return !isWiki || !errors.Is(err, transport.ErrAuthenticationRequired)
+	return !isWiki || !(errors.Is(err, transport.ErrAuthenticationRequired) ||
+		errors.Is(err, transport.ErrRepositoryNotFound))
 }
 
 func GetRepositories(name string) []typedef.Repository {

@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/transport"
+	gitclient "github.com/go-git/go-git/v5/plumbing/transport/client"
+	githttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	"github.com/stretchr/testify/require"
 	"github.com/wnarutou/gitrieve/internal/config"
 	"github.com/wnarutou/gitrieve/internal/githubapi"
@@ -114,6 +117,79 @@ func TestSyncCompletesWhenPublicWikiIsEnabledButHasNoPages(t *testing.T) {
 	require.Contains(t, sink.logs, "info:Wiki for github.com/test/repo is enabled but has no pages")
 }
 
+func TestSyncHandlesMissingWikiFromGitHTTP(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		private bool
+		status  int
+		wantErr error
+	}{
+		{name: "public missing wiki", status: http.StatusNotFound},
+		{name: "public uninitialized wiki", status: http.StatusUnauthorized},
+		{name: "private missing wiki", private: true, status: http.StatusNotFound, wantErr: transport.ErrRepositoryNotFound},
+		{name: "private authentication failure", private: true, status: http.StatusUnauthorized, wantErr: transport.ErrAuthenticationRequired},
+		{name: "public permission failure", status: http.StatusForbidden, wantErr: transport.ErrAuthorizationFailed},
+		{name: "server failure", status: http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			previousDir, err := os.Getwd()
+			require.NoError(t, err)
+			require.NoError(t, os.Chdir(t.TempDir()))
+			t.Cleanup(func() { require.NoError(t, os.Chdir(previousDir)) })
+
+			roundTripper := wikiRoundTripper(func(req *http.Request) (*http.Response, error) {
+				status := http.StatusOK
+				body := fmt.Sprintf(`{"has_wiki":true,"private":%t}`, tc.private)
+				switch req.URL.Host {
+				case "api.github.com":
+					require.Equal(t, "/repos/test/repo", req.URL.Path)
+				case "github.com":
+					require.Equal(t, "/test/repo.wiki/info/refs", req.URL.Path)
+					status = tc.status
+					body = "Repository not found"
+				default:
+					t.Fatalf("unexpected request: %s", req.URL)
+				}
+				return &http.Response{
+					StatusCode: status,
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Header:     make(http.Header),
+					Request:    req,
+				}, nil
+			})
+			previousTransport := http.DefaultTransport
+			http.DefaultTransport = roundTripper
+			t.Cleanup(func() { http.DefaultTransport = previousTransport })
+			previousGitTransport := gitclient.Protocols["https"]
+			gitclient.InstallProtocol("https", githttp.NewClient(&http.Client{Transport: roundTripper}))
+			t.Cleanup(func() { gitclient.InstallProtocol("https", previousGitTransport) })
+
+			sink := &wikiLogSink{}
+			ui.SetSink(sink)
+			t.Cleanup(func() { ui.SetSink(nil) })
+			unbind := ui.Bind("execution-1", "wiki")
+			defer unbind()
+
+			err = Sync(wikiExecutionContext(context.Background(), &config.Config{}), typedef.Repository{
+				Name: "repo", URL: "github.com/test/repo", UseCache: true,
+			}, nil)
+			if tc.status == http.StatusInternalServerError {
+				require.ErrorContains(t, err, "status code: 500")
+				return
+			}
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Contains(t, sink.logs, "info:Wiki for github.com/test/repo is enabled but has no pages")
+			for _, message := range sink.logs {
+				require.NotContains(t, message, "error:")
+			}
+		})
+	}
+}
+
 func TestUninitializedWikiDoesNotHidePrivateRepositoryAuthenticationFailure(t *testing.T) {
 	err := fmt.Errorf("clone wiki: %w: Repository not found", transport.ErrAuthenticationRequired)
 
@@ -121,6 +197,15 @@ func TestUninitializedWikiDoesNotHidePrivateRepositoryAuthenticationFailure(t *t
 	require.True(t, uninitializedPublicWiki(true, false, err))
 	require.False(t, uninitializedPublicWiki(false, false, err))
 	require.False(t, uninitializedPublicWiki(true, false, errors.New("network down")))
+}
+
+func TestUninitializedWikiDoesNotHideJoinedCleanupFailure(t *testing.T) {
+	for _, transportErr := range []error{transport.ErrRepositoryNotFound, transport.ErrAuthenticationRequired} {
+		t.Run(transportErr.Error(), func(t *testing.T) {
+			err := fmt.Errorf("clone wiki: %w", errors.Join(transportErr, errors.New("cleanup failed")))
+			require.False(t, uninitializedPublicWiki(true, false, err))
+		})
+	}
 }
 
 func TestSyncCancelledContextReturnsImmediately(t *testing.T) {
